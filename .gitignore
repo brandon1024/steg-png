@@ -1,0 +1,22 @@
+# JetBrains
+.idea/
+
+# macOS
+.DS_Store
+._*
+
+# CMake
+cmake-build-*/
+build/
+CMakeCache.txt
+CMakeFiles
+CMakeScripts
+Testing
+Makefile
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+
+# Project Specific
+extern/
