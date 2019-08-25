@@ -1,5 +1,5 @@
-#ifndef GITCHAT_USAGE_H
-#define GITCHAT_USAGE_H
+#ifndef STEG_PNG_USAGE_H
+#define STEG_PNG_USAGE_H
 
 #include <stdarg.h>
 
@@ -107,18 +107,4 @@ void variadic_show_usage_with_options(const struct usage_description *cmd_usage,
 int argument_matches_option(const char *arg,
 		struct option_description description);
 
-/**
- * Performs argument validation to verify that the argument:
- * - matches a valid option description, e.g. -a --abc
- * - matches a valid boolean flag if is a short combined boolean flag, e.g. -abc
- *
- * This function returns true if the argument is valid, false otherwise. If the
- * argument is not prefixed by a dash, this function will return true (still a
- * valid argument). If the provided argument has a length of zero, this function
- * will return false. If the argument does not have an associated entry in
- * arg_usage_descriptions, this function will return false.
- * */
-int is_valid_argument(const char *arg,
-		const struct option_description arg_usage_descriptions[]);
-
-#endif //GITCHAT_USAGE_H
+#endif //STEG_PNG_USAGE_H

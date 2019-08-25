@@ -1,5 +1,5 @@
-#ifndef GIT_CHAT_STRBUF_H
-#define GIT_CHAT_STRBUF_H
+#ifndef STEG_PNG_STRBUF_H
+#define STEG_PNG_STRBUF_H
 
 #include <stdlib.h>
 
@@ -7,7 +7,7 @@
  * strbuf api
  *
  * The strbuf api is used as an alternative to dynamically allocating character
- * arrays. strbuf's are linearly resized when needed.
+ * and byte arrays. strbuf's are linearly resized when needed.
  *
  * Conventional string buffers can be easily attached (appended) to a strbuf, and
  * accessed using the strbuf->buff property. The internal buffer is guaranteed
@@ -89,4 +89,4 @@ int strbuf_trim(struct strbuf *buff);
  * */
 char *strbuf_detach(struct strbuf *buff);
 
-#endif //GIT_CHAT_STRBUF_H
+#endif //STEG_PNG_STRBUF_H
