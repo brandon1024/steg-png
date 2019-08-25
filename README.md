@@ -9,13 +9,14 @@ Portable Network Graphics (PNG) images have a pretty simple format. They are com
 Data chunks within the file are split into two groups, known as `critical` and `ancillary`. Critical chunks are necessary for the decoder to be able to decode and display the image. This includes information like color data and dimensions. Ancillary chunks are optional chunks of data that decoders will ignore if unknown to them. There are a number of standard ancillary chunks, but steg-png uses a custom "stEG" type chunk.
 
 Chunks have the following byte structure:
+
 | Length  | Chunk Type | Chunk Data   | CRC     |
 |---------|------------|--------------|---------|
 | 4 bytes | 4 bytes    | Length bytes | 4 bytes |
 
-steg-png builds a custom chunk from the message given, then creates a copy of the input file but with the custom chunk inserted before the IEND chunk.
+steg-png builds a custom chunk from the message given, then creates a copy of the input file but with the custom chunk inserted before the `IEND` chunk.
 
-You can read more on the specifics of PNG in [informational RFC 2083](https://tools.ietf.org/html/rfc2083);
+You can read more on the specifics of PNG in [informational RFC 2083](https://tools.ietf.org/html/rfc2083).
 
 ## Building and Installing
 By default, steg-png is installed into your user's ~/bin directory. To install, from the project root run:
