@@ -157,3 +157,9 @@ char *strbuf_detach(struct strbuf *buff)
 
 	return detached_buffer;
 }
+
+void strbuf_clear(struct strbuf *buff)
+{
+	memset(buff->buff, 0, buff->alloc);
+	buff->len = 0;
+}

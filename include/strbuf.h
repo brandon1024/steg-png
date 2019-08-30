@@ -89,4 +89,10 @@ int strbuf_trim(struct strbuf *buff);
  * */
 char *strbuf_detach(struct strbuf *buff);
 
+/**
+ * Clear all content stored under the given strbuf. The strbuf is not resized,
+ * and can be reused for other purposes.
+ * */
+void strbuf_clear(struct strbuf *buff);
+
 #endif //STEG_PNG_STRBUF_H

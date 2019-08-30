@@ -5,6 +5,8 @@
 
 #define NORETURN __attribute__((noreturn))
 
+#define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
+
 /**
  * Frequently used error/information messages should be defined here.
  * */
