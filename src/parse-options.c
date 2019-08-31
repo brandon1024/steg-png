@@ -156,7 +156,7 @@ static int parse_short_option(int argc, char *argv[], int arg_index,
 			}
 
 			if (op->type == OPTION_INT_T) {
-				arg++;
+				arg = argv[arg_index + 1];
 				char *tailptr = NULL;
 				long arg_value = strtol(arg, &tailptr, 10);
 
@@ -171,7 +171,7 @@ static int parse_short_option(int argc, char *argv[], int arg_index,
 			}
 
 			if (op->type == OPTION_STRING_T) {
-				arg++;
+				arg = argv[arg_index + 1];
 				array_shift(argv, arg_index, &new_len);
 				array_shift(argv, arg_index, &new_len);
 

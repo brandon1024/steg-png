@@ -64,7 +64,7 @@ void chunk_iterator_destroy_ctx(struct chunk_iterator_ctx *ctx)
 	ctx->pos = 0;
 }
 
-int png_parse_chunk_data_length(struct strbuf *chunk, u_int32_t *len)
+int png_parse_chunk_data_length(const struct strbuf *chunk, u_int32_t *len)
 {
 	if (chunk->len <= sizeof(u_int32_t))
 		return 1;
@@ -74,7 +74,7 @@ int png_parse_chunk_data_length(struct strbuf *chunk, u_int32_t *len)
 	return 0;
 }
 
-int png_parse_chunk_type(struct strbuf *chunk, char type[])
+int png_parse_chunk_type(const struct strbuf *chunk, char type[])
 {
 	for (size_t i = 0; i < CHUNK_TYPE_LENGTH; i++) {
 		if (i >= chunk->len)
@@ -88,7 +88,7 @@ int png_parse_chunk_type(struct strbuf *chunk, char type[])
 	return 0;
 }
 
-int png_parse_chunk_crc(struct strbuf *chunk, u_int32_t *crc)
+int png_parse_chunk_crc(const struct strbuf *chunk, u_int32_t *crc)
 {
 	u_int32_t data_len = 0;
 	if (png_parse_chunk_data_length(chunk, &data_len))

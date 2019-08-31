@@ -47,7 +47,7 @@ void chunk_iterator_destroy_ctx(struct chunk_iterator_ctx *ctx);
  *
  * Returns zero if the length was parsed successfully, and 1 otherwise.
  * */
-int png_parse_chunk_data_length(struct strbuf *chunk, u_int32_t *len);
+int png_parse_chunk_data_length(const struct strbuf *chunk, u_int32_t *len);
 
 /**
  * Parse a PNG file chunk for the chunk type field. The given `type` must have
@@ -55,13 +55,13 @@ int png_parse_chunk_data_length(struct strbuf *chunk, u_int32_t *len);
  *
  * Returns zero of the type was parsed successfully, and 1 otherwise.
  * */
-int png_parse_chunk_type(struct strbuf *chunk, char type[]);
+int png_parse_chunk_type(const struct strbuf *chunk, char type[]);
 
 /**
  * Parse a PNG file chunk for the CRC field.
  *
  * Returns zero if the CRC was parsed successfully, and 1 otherwise.
  * */
-int png_parse_chunk_crc(struct strbuf *chunk, u_int32_t *crc);
+int png_parse_chunk_crc(const struct strbuf *chunk, u_int32_t *crc);
 
 #endif //STEG_PNG_PNG_CHUNK_PROCESSOR_H

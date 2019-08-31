@@ -16,10 +16,6 @@
 
 #define BUFF_LEN 1024
 
-// TODO fix parse_options with string args (?)
-// TODO update print_summary to show length, type and CRC fields
-// TODO update usage string with new options
-
 static int embed_message(const char *file_path, const char *output_file,
 		const char *message, int quiet);
 static int embed_file(const char *file_path, const char *output_file,
@@ -29,7 +25,9 @@ static void embed_message_chunk(int input_fd, int output_fd, void *new_chunk,
 static void compute_chunk_data(struct strbuf *buffer, const char *message);
 static void print_summary(const char *original_file_path,
 		const char *new_file_path, const struct strbuf *data_chunk);
+static void print_file_summary(const char *file_path, int filename_table_len);
 static void print_hex_dump(const char *data, size_t len);
+static int compute_md5_sum(int fd, unsigned char md5_hash[]);
 
 int cmd_embed(int argc, char *argv[])
 {
@@ -40,7 +38,9 @@ int cmd_embed(int argc, char *argv[])
 	int quiet = 0;
 
 	const struct usage_string main_cmd_usage[] = {
-			USAGE("steg-png [--embed] (--message | -m <message>) <file>"),
+			USAGE("steg-png --embed (-m | --message <message>) [-o | --output <file>] <file>"),
+			USAGE("steg-png --embed (-f | --file <file>) [-o | --output <file>] <file>"),
+			USAGE("steg-png --embed (-h | --help)"),
 			USAGE_END()
 	};
 
@@ -75,6 +75,22 @@ int cmd_embed(int argc, char *argv[])
 	return embed_message(argv[0], output_file, message, quiet);
 }
 
+/**
+ * Embed a simple string message in a PNG image.
+ *
+ * The fie_path argument must be the path to a PNG image. If the image is not a
+ * PNG or is corrupt the application will DIE().
+ *
+ * The output_file must be the path and filename where the new PNG will be saved.
+ * If the file already exists, the file will be truncated to zero bytes and
+ * overwritten.
+ *
+ * The provided message will be encoded in a chunk of type "stEG" that is located
+ * before the IEND chunk.
+ *
+ * If quiet is zero, the summary details are suppressed. Error messages will
+ * still be printed to stderr.
+ * */
 static int embed_message(const char *file_path, const char *output_file, const char *message, int quiet)
 {
 	struct stat st;
@@ -132,6 +148,22 @@ static int embed_message(const char *file_path, const char *output_file, const c
 	return 0;
 }
 
+/**
+ * Embed the contents of a file in a PNG image.
+ *
+ * The fie_path argument must be the path to a PNG image. If the image is not a
+ * PNG or is corrupt the application will DIE().
+ *
+ * The output_file must be the path and filename where the new PNG will be saved.
+ * If the file already exists, the file will be truncated to zero bytes and
+ * overwritten.
+ *
+ * The provided file will be read in a chunk of type "stEG" that is located
+ * before the IEND chunk.
+ *
+ * If quiet is zero, the summary details are suppressed. Error messages will
+ * still be printed to stderr.
+ * */
 static int embed_file(const char *file_path, const char *output_file,
 		const char *file_to_embed, int quiet)
 {
@@ -253,6 +285,13 @@ static int embed_file(const char *file_path, const char *output_file,
 	return 0;
 }
 
+/**
+ * Embed a given chunk in a file represented by an open file descriptor input_fd,
+ * into a new file represented by an open file descriptor output_fd.
+ *
+ * The new chunk is written in the file directly preceeding the IEND chunk that
+ * signals the end of a PNG file.
+ * */
 static void embed_message_chunk(int input_fd, int output_fd, void *new_chunk,
 		size_t chunk_len)
 {
@@ -306,6 +345,10 @@ static void embed_message_chunk(int input_fd, int output_fd, void *new_chunk,
 	strbuf_release(&chunk_buffer);
 }
 
+/**
+ * From a message string, generate and attach to the given strbuf a correctly
+ * formatted chunk of type "stEG".
+ * */
 static void compute_chunk_data(struct strbuf *buffer, const char *message)
 {
 	struct strbuf chunk_data;
@@ -327,16 +370,20 @@ static void compute_chunk_data(struct strbuf *buffer, const char *message)
 	strbuf_release(&chunk_data);
 }
 
+/**
+ * Print a summary of a embedded chunk operation.
+ *
+ * Prints the input file and output file to stdout in the following format:
+ * in  <filename> <file mode> <file length> <md5 hash>
+ * out <filename> <file mode> <file length> <md5 hash>
+ *
+ * embedded message chunk:
+ * type: <string>	length: <unsigned long>	crc: <unsigned hex>
+ * <hexdump of message chunk>
+ * */
 static void print_summary(const char *original_file_path,
 		const char *new_file_path, const struct strbuf *data_chunk)
 {
-	struct md5_ctx ctx;
-	unsigned char md5_hash[MD5_DIGEST_SIZE];
-	struct stat st;
-	int fd;
-	ssize_t bytes_read = 0;
-	char buffer[BUFF_LEN];
-
 	const char *filename_from = strrchr(original_file_path, '/');
 	filename_from = !filename_from ? original_file_path : filename_from + 1;
 	const char *filename_to = strrchr(new_file_path, '/');
@@ -347,63 +394,78 @@ static void print_summary(const char *original_file_path,
 	size_t filename_to_len = strlen(filename_to);
 	size_t max_filename_len = (filename_from_len >= filename_to_len) ? (filename_from_len) : (filename_to_len);
 
-	// print input file summary
-	if (lstat(original_file_path, &st) && errno == ENOENT)
-		FATAL("failed to stat %s'", original_file_path);
-
-	fd = open(original_file_path, O_RDONLY);
-	if (fd < 0)
-		FATAL(FILE_OPEN_FAILED, original_file_path);
-
-	md5_init_ctx(&ctx);
-	while ((bytes_read = recoverable_read(fd, buffer, BUFF_LEN)) > 0)
-		md5_process_bytes(buffer, bytes_read, &ctx);
-
-	if (bytes_read < 0)
-		FATAL("failed to read from file '%s'", original_file_path);
-
-	md5_finish_ctx(&ctx, md5_hash);
-
 	fprintf(stdout, "%-3s ", "in");
-	fprintf(stdout, "%s %*s", filename_from, (int)(max_filename_len - filename_from_len + 1), " ");
+	print_file_summary(original_file_path, (int)(max_filename_len - filename_from_len + 1));
+
+	fprintf(stdout, "%-3s ", "out");
+	print_file_summary(new_file_path, (int)(max_filename_len - filename_to_len + 1));
+
+	if (data_chunk) {
+		char type[CHUNK_TYPE_LENGTH];
+		u_int32_t length;
+		u_int32_t crc;
+
+		if (png_parse_chunk_type(data_chunk, type))
+			BUG("failed to parse chunk type");
+
+		if (png_parse_chunk_data_length(data_chunk, &length))
+			BUG("failed to parse chunk data length");
+
+		if (png_parse_chunk_crc(data_chunk, &crc))
+			BUG("failed to parse chunk CRC");
+
+		fprintf(stdout, "\nembedded message chunk:\n");
+		fprintf(stdout, "type: %.*s\t", CHUNK_TYPE_LENGTH, type);
+		fprintf(stdout, "length: %lu\t", (unsigned long) length);
+		fprintf(stdout, "crc: %lx\n", (unsigned long) crc);
+
+		// print hexdump
+		print_hex_dump(data_chunk->buff, data_chunk->len);
+	}
+}
+
+/**
+ * Print a summary of a file, with table formatting capability.
+ *
+ * Prints the file summary in the following format:
+ * <filename> <file mode> <file length> <md5 hash>
+ *
+ * The filename may be padded with whitespace using the filename_table_len
+ * argument.
+ * */
+static void print_file_summary(const char *file_path, int filename_table_len)
+{
+	unsigned char md5_hash[MD5_DIGEST_SIZE];
+	struct stat st;
+	int fd;
+
+	const char *filename_from = strrchr(file_path, '/');
+	filename_from = !filename_from ? file_path : filename_from + 1;
+
+	// print input file summary
+	if (lstat(file_path, &st) && errno == ENOENT)
+		FATAL("failed to stat %s'", file_path);
+
+	fd = open(file_path, O_RDONLY);
+	if (fd < 0)
+		FATAL(FILE_OPEN_FAILED, file_path);
+
+	if (compute_md5_sum(fd, md5_hash))
+		FATAL("failed to compute md5 hash of file '%s'", file_path);
+
+	fprintf(stdout, "%s %*s", filename_from, filename_table_len, " ");
 	fprintf(stdout, "%o %lu ", st.st_mode, st.st_size);
 	for (size_t i = 0; i < MD5_DIGEST_SIZE; i++)
 		fprintf(stdout, "%02x", md5_hash[i]);
 	fprintf(stdout, "\n");
 
 	close(fd);
-
-	// print output file summary
-	if (lstat(new_file_path, &st) && errno == ENOENT)
-		FATAL("failed to stat %s'", new_file_path);
-
-	fd = open(new_file_path, O_RDONLY);
-	if (fd < 0)
-		FATAL(FILE_OPEN_FAILED, new_file_path);
-
-	md5_init_ctx(&ctx);
-	while ((bytes_read = recoverable_read(fd, buffer, BUFF_LEN)) > 0)
-		md5_process_bytes(buffer, bytes_read, &ctx);
-
-	if (bytes_read < 0)
-		FATAL("failed to read from file '%s'", new_file_path);
-
-	md5_finish_ctx(&ctx, md5_hash);
-
-	fprintf(stdout, "%-3s ", "out");
-	fprintf(stdout, "%s %*s", filename_to, (int)(max_filename_len - filename_to_len + 1), " ");
-	fprintf(stdout, "%o %lu ", st.st_mode, st.st_size);
-	for (size_t i = 0; i < MD5_DIGEST_SIZE; i++)
-		fprintf(stdout, "%02x", md5_hash[i]);
-	fprintf(stdout, "\n\n");
-
-	if (data_chunk) {
-		// print message chunk
-		fprintf(stdout, "embedded message chunk:\n");
-		print_hex_dump(data_chunk->buff, data_chunk->len);
-	}
 }
 
+/**
+ * Print a hexdump of a given buffer. The hexdump is formatted similar to
+ * the hexdump tool.
+ * */
 static void print_hex_dump(const char *data, size_t len)
 {
 	for (size_t i = 0; i < len; i += 16) {
@@ -419,4 +481,26 @@ static void print_hex_dump(const char *data, size_t len)
 			fprintf(stdout, "%c", isprint(data[j]) ? data[j] : '.');
 		fprintf(stdout, "|\n");
 	}
+}
+
+/**
+ * Compute the md5 sum of an open file. The md5_hash argument must be an array of
+ * length MD5_DIGEST_SIZE.
+ * */
+static int compute_md5_sum(int fd, unsigned char md5_hash[])
+{
+	struct md5_ctx ctx;
+	ssize_t bytes_read = 0;
+
+	md5_init_ctx(&ctx);
+
+	char buffer[BUFF_LEN];
+	while ((bytes_read = recoverable_read(fd, buffer, BUFF_LEN)) > 0)
+		md5_process_bytes(buffer, bytes_read, &ctx);
+
+	if (bytes_read < 0)
+		return 1;
+
+	md5_finish_ctx(&ctx, md5_hash);
+	return 0;
 }
