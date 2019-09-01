@@ -2,10 +2,10 @@
 #include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <ctype.h>
 #include <errno.h>
 #include <sys/stat.h>
 #include <arpa/inet.h>
+#include <time.h>
 
 #include "crc.h"
 #include "md5.h"
@@ -15,19 +15,14 @@
 #include "utils.h"
 
 #define BUFF_LEN 1024
+#define DATA_TOKEN (0x4c)
 
-static int embed_message(const char *file_path, const char *output_file,
-		const char *message, int quiet);
-static int embed_file(const char *file_path, const char *output_file,
-		const char *file_to_embed, int quiet);
-static void embed_message_chunk(int input_fd, int output_fd, void *new_chunk,
-		size_t chunk_len);
-static void compute_chunk_data(struct strbuf *buffer, const char *message);
-static void print_summary(const char *original_file_path,
-		const char *new_file_path, const struct strbuf *data_chunk);
-static void print_file_summary(const char *file_path, int filename_table_len);
-static void print_hex_dump(const char *data, size_t len);
-static int compute_md5_sum(int fd, unsigned char md5_hash[]);
+static int embed_message(const char *, const char *, const char *, int);
+static int embed_file(const char *, const char *, const char *, int);
+static long embed_data(int, int, int, const void *, size_t);
+static void print_summary(const char *, const char *, size_t);
+static void print_file_summary(const char *, int);
+static int compute_md5_sum(int, unsigned char[]);
 
 int cmd_embed(int argc, char *argv[])
 {
@@ -78,20 +73,21 @@ int cmd_embed(int argc, char *argv[])
 /**
  * Embed a simple string message in a PNG image.
  *
- * The fie_path argument must be the path to a PNG image. If the image is not a
- * PNG or is corrupt the application will DIE().
+ * The file_path argument must be the path to a PNG image. If the image is not a
+ * PNG or is corrupt the application will exit abruptly.
  *
  * The output_file must be the path and filename where the new PNG will be saved.
  * If the file already exists, the file will be truncated to zero bytes and
  * overwritten.
  *
  * The provided message will be encoded in a chunk of type "stEG" that is located
- * before the IEND chunk.
+ * directly before the IEND chunk.
  *
  * If quiet is zero, the summary details are suppressed. Error messages will
  * still be printed to stderr.
  * */
-static int embed_message(const char *file_path, const char *output_file, const char *message, int quiet)
+static int embed_message(const char *file_path, const char *output_file,
+		const char *message, int quiet)
 {
 	struct stat st;
 	if (lstat(file_path, &st) && errno == ENOENT)
@@ -113,7 +109,6 @@ static int embed_message(const char *file_path, const char *output_file, const c
 	if (out_fd < 0)
 		FATAL(FILE_OPEN_FAILED, output_file_path.buff);
 
-	// build message buffer
 	struct strbuf message_buf;
 	strbuf_init(&message_buf);
 	if (!message) {
@@ -128,21 +123,14 @@ static int embed_message(const char *file_path, const char *output_file, const c
 		strbuf_attach_str(&message_buf, message);
 	}
 
-	// prepare chunk
-	struct strbuf chunk_data;
-	strbuf_init(&chunk_data);
-	compute_chunk_data(&chunk_data, message_buf.buff);
-
-	embed_message_chunk(in_fd, out_fd, message_buf.buff, message_buf.len);
+	size_t chunk_pos = embed_data(in_fd, out_fd, -1, message_buf.buff, message_buf.len);
+	if (!quiet)
+		print_summary(file_path, output_file_path.buff, chunk_pos);
 
 	close(in_fd);
 	close(out_fd);
 
-	if (!quiet)
-		print_summary(file_path, output_file_path.buff, &chunk_data);
-
 	strbuf_release(&message_buf);
-	strbuf_release(&chunk_data);
 	strbuf_release(&output_file_path);
 
 	return 0;
@@ -152,7 +140,7 @@ static int embed_message(const char *file_path, const char *output_file, const c
  * Embed the contents of a file in a PNG image.
  *
  * The fie_path argument must be the path to a PNG image. If the image is not a
- * PNG or is corrupt the application will DIE().
+ * PNG or is corrupt the application will exit abruptly.
  *
  * The output_file must be the path and filename where the new PNG will be saved.
  * If the file already exists, the file will be truncated to zero bytes and
@@ -187,14 +175,54 @@ static int embed_file(const char *file_path, const char *output_file,
 	if (out_fd < 0)
 		FATAL(FILE_OPEN_FAILED, output_file_path.buff);
 
-	if (lstat(file_to_embed, &st) && errno == ENOENT)
-		FATAL("failed to stat %s'", file_to_embed);
-
-	u_int32_t file_size = st.st_size;
-
 	int file_to_embed_fd = open(file_to_embed, O_RDONLY);
 	if (file_to_embed_fd < 0)
 		FATAL(FILE_OPEN_FAILED, file_to_embed);
+
+	long chunk_pos = embed_data(in_fd, out_fd, file_to_embed_fd, NULL, 0);
+	if (!quiet)
+		print_summary(file_path, output_file_path.buff, chunk_pos);
+
+	close(in_fd);
+	close(out_fd);
+	close(file_to_embed_fd);
+
+	return 0;
+}
+
+/**
+ * Embed arbitrary data from a file or string to a PNG file.
+ *
+ * in_fd must be an open file descriptor to the source PNG file.
+ *
+ * out_fd must be an open file descriptor to the destination PNG file.
+ *
+ * If embedding a file, data_fd must be an open file descriptor to the file
+ * that will be embedded. Otherwise, if embedding a string message, message must
+ * be non-null.
+ *
+ * Returns the position in the output file of the first byte of the embedded chunk.
+ * This value can be used to seek to that position in the file for further use.
+ * */
+static long embed_data(int in_fd, int out_fd, int data_fd, const void *data,
+		size_t message_len)
+{
+	if (data && data_fd != -1)
+		BUG("either data or data_fd must be defined, not both");
+	if (!data && data_fd == -1)
+		BUG("either data or data_fd must be defined");
+
+	// compute the chunk data length
+	u_int32_t file_size = 0;
+	if (data) {
+		file_size = message_len;
+	} else {
+		struct stat st;
+		if (fstat(data_fd, &st) && errno == ENOENT)
+			FATAL("failed to stat file descriptor %d", data_fd);
+
+		file_size = st.st_size;
+	}
 
 	struct chunk_iterator_ctx ctx;
 	int status = chunk_iterator_init_ctx(&ctx, in_fd);
@@ -210,6 +238,7 @@ static int embed_file(const char *file_path, const char *output_file,
 	char type_buffer[CHUNK_TYPE_LENGTH];
 	char buffer[BUFF_LEN];
 	struct strbuf chunk_buffer;
+	long chunk_pos = 0;
 
 	strbuf_init(&chunk_buffer);
 	do {
@@ -228,33 +257,57 @@ static int embed_file(const char *file_path, const char *output_file,
 				DIE("non-compliant input file: IEND chunk found twice in input file");
 
 			IEND_found = 1;
+			u_int32_t crc = 0;
+			time_t unix_time = htonl(time(NULL));
+			unsigned char token = DATA_TOKEN;
+
+			chunk_pos = lseek(out_fd, 0, SEEK_CUR);
+			if (chunk_pos < 0)
+				FATAL("failed to read the file position in the output file");
 
 			// write data size
-			u_int32_t len_net_order = htonl(file_size);
+			unsigned long header_len = sizeof(time_t) + sizeof(unsigned char);
+			u_int32_t len_net_order = htonl(file_size + header_len);
 			if (recoverable_write(out_fd, &len_net_order, sizeof(u_int32_t)) != sizeof(u_int32_t))
 				FATAL("failed to write data chunk length to output file");
 
 			// write chunk type
-			char chunk_type[] = {'s', 't', 'E', 'G'};
-			if (recoverable_write(out_fd, chunk_type, sizeof(char) * ARRAY_SIZE(chunk_type)) != sizeof(char) * ARRAY_SIZE(chunk_type))
+			char chunk_type[CHUNK_TYPE_LENGTH] = {'s', 't', 'E', 'G'};
+			if (recoverable_write(out_fd, chunk_type, sizeof(char) * CHUNK_TYPE_LENGTH) != sizeof(char) * CHUNK_TYPE_LENGTH)
 				FATAL("failed to write data chunk length to output file");
+			crc = crc32_update(crc, chunk_type, sizeof(char) * CHUNK_TYPE_LENGTH);
 
-			// write chunk data and compute CRC
-			u_int32_t total_bytes_read = 0;
-			ssize_t bytes_read = 0;
-			u_int32_t crc = 0;
-			while ((bytes_read = recoverable_read(file_to_embed_fd, buffer, BUFF_LEN)) > 0) {
-				total_bytes_read += bytes_read;
-				crc = crc32_update(crc, buffer, bytes_read);
-				if (recoverable_write(out_fd, buffer, bytes_read) != bytes_read)
-					FATAL("failed to write new chunk to output file");
+			// write header
+			if (recoverable_write(out_fd, &unix_time, sizeof(time_t)) != sizeof(time_t))
+				FATAL("failed to write data chunk header to output file");
+			if (recoverable_write(out_fd, &token, sizeof(unsigned char)) != sizeof(unsigned char))
+				FATAL("failed to write data chunk nonce to output file");
+			crc = crc32_update(crc, (char *) &unix_time, sizeof(time_t));
+			crc = crc32_update(crc, (char *) &token, sizeof(unsigned char));
+
+			if (data) {
+				if (recoverable_write(out_fd, data, message_len) != message_len)
+					FATAL("failed to write message to output file descriptor %d", out_fd);
+
+				crc = crc32_update(crc, data, message_len);
+			} else {
+				// write chunk data and compute CRC
+				u_int32_t total_bytes_read = 0;
+				ssize_t bytes_read = 0;
+				while ((bytes_read = recoverable_read(data_fd, buffer, BUFF_LEN)) > 0) {
+					total_bytes_read += bytes_read;
+
+					if (recoverable_write(out_fd, buffer, bytes_read) != bytes_read)
+						FATAL("failed to write new chunk to output file descriptor %d", out_fd);
+					crc = crc32_update(crc, buffer, bytes_read);
+				}
+
+				if (bytes_read < 0)
+					FATAL("failed to read from fd %d", data_fd);
+
+				if (total_bytes_read != file_size)
+					FATAL("stat file size mismatch");
 			}
-
-			if (bytes_read < 0)
-				FATAL("failed to read from file '%s'", file_to_embed);
-
-			if (total_bytes_read != file_size)
-				FATAL("stat file size mismatch");
 
 			// write CRC
 			u_int32_t crc_net_order = htonl(crc);
@@ -275,99 +328,7 @@ static int embed_file(const char *file_path, const char *output_file,
 	chunk_iterator_destroy_ctx(&ctx);
 	strbuf_release(&chunk_buffer);
 
-	close(in_fd);
-	close(out_fd);
-	close(file_to_embed_fd);
-
-	if (!quiet)
-		print_summary(file_path, output_file_path.buff, NULL);
-
-	return 0;
-}
-
-/**
- * Embed a given chunk in a file represented by an open file descriptor input_fd,
- * into a new file represented by an open file descriptor output_fd.
- *
- * The new chunk is written in the file directly preceeding the IEND chunk that
- * signals the end of a PNG file.
- * */
-static void embed_message_chunk(int input_fd, int output_fd, void *new_chunk,
-		size_t chunk_len)
-{
-	struct strbuf chunk_buffer;
-	strbuf_init(&chunk_buffer);
-
-	struct chunk_iterator_ctx ctx;
-	int status = chunk_iterator_init_ctx(&ctx, input_fd);
-	if (status < 0)
-		DIE("failed to read from input file");
-	else if(status > 0)
-		DIE("input file is not a PNG (does not conform to RFC 2083)");
-
-	if (recoverable_write(output_fd, PNG_SIG, SIGNATURE_LENGTH) != SIGNATURE_LENGTH)
-		FATAL("failed to write PNG file signature to output file");
-
-	int IEND_found = 0;
-	char type_buffer[CHUNK_TYPE_LENGTH];
-	do {
-		int has_next_chunk = chunk_iterator_next_chunk(&ctx, &chunk_buffer);
-		if (has_next_chunk < 0)
-			DIE("failed to read corrupted chunk in input file");
-
-		if (!has_next_chunk)
-			break;
-
-		if (png_parse_chunk_type(&chunk_buffer, type_buffer))
-			DIE("unexpected chunk type in input file");
-
-		if (!memcmp(IEND_CHUNK_TYPE, type_buffer, CHUNK_TYPE_LENGTH)) {
-			if (IEND_found)
-				DIE("non-compliant input file: IEND chunk found twice in input file");
-
-			IEND_found = 1;
-			// write new chunk
-			if (recoverable_write(output_fd, new_chunk, chunk_len) != chunk_len)
-				FATAL("failed to write new chunk to output file");
-		}
-
-		// write the chunk
-		if (recoverable_write(output_fd, chunk_buffer.buff, chunk_buffer.len) != chunk_buffer.len)
-			FATAL("failed to write chunk to output file");
-
-		strbuf_clear(&chunk_buffer);
-	} while(1);
-
-	if (!IEND_found)
-		DIE("input file missing IEND chunk");
-
-	chunk_iterator_destroy_ctx(&ctx);
-	strbuf_release(&chunk_buffer);
-}
-
-/**
- * From a message string, generate and attach to the given strbuf a correctly
- * formatted chunk of type "stEG".
- * */
-static void compute_chunk_data(struct strbuf *buffer, const char *message)
-{
-	struct strbuf chunk_data;
-	strbuf_init(&chunk_data);
-	strbuf_attach_str(&chunk_data, "stEG");
-	strbuf_attach(&chunk_data, message, strlen(message));
-
-	uint32_t msg_len = strlen(message);
-	uint32_t crc = crc32(chunk_data.buff, chunk_data.len);
-
-	// convert from host byte order to network byte order
-	msg_len = htonl(msg_len);
-	crc = htonl(crc);
-
-	strbuf_attach_bytes(buffer, &msg_len, sizeof(uint32_t));
-	strbuf_attach_bytes(buffer, chunk_data.buff, chunk_data.len);
-	strbuf_attach_bytes(buffer, &crc, sizeof(uint32_t));
-
-	strbuf_release(&chunk_data);
+	return chunk_pos;
 }
 
 /**
@@ -377,12 +338,15 @@ static void compute_chunk_data(struct strbuf *buffer, const char *message)
  * in  <filename> <file mode> <file length> <md5 hash>
  * out <filename> <file mode> <file length> <md5 hash>
  *
- * embedded message chunk:
- * type: <string>	length: <unsigned long>	crc: <unsigned hex>
- * <hexdump of message chunk>
+ * embedded chunk details:
+ * chunk file offset: <offset of embedded chunk>
+ * chunk data length: <length> (network byte order <length>)
+ * chunk type: <type>
+ * timestamp: <timestamp>
+ * cyclic redundancy check: <32-bit CRC> (network byte order <32-bit CRC>)
  * */
 static void print_summary(const char *original_file_path,
-		const char *new_file_path, const struct strbuf *data_chunk)
+		const char *new_file_path, size_t chunk_file_offset)
 {
 	const char *filename_from = strrchr(original_file_path, '/');
 	filename_from = !filename_from ? original_file_path : filename_from + 1;
@@ -394,34 +358,47 @@ static void print_summary(const char *original_file_path,
 	size_t filename_to_len = strlen(filename_to);
 	size_t max_filename_len = (filename_from_len >= filename_to_len) ? (filename_from_len) : (filename_to_len);
 
+	// print input and output file details
 	fprintf(stdout, "%-3s ", "in");
 	print_file_summary(original_file_path, (int)(max_filename_len - filename_from_len + 1));
 
 	fprintf(stdout, "%-3s ", "out");
 	print_file_summary(new_file_path, (int)(max_filename_len - filename_to_len + 1));
 
-	if (data_chunk) {
-		char type[CHUNK_TYPE_LENGTH];
-		u_int32_t length;
-		u_int32_t crc;
+	// print embedded chunk details
+	int fd = open(new_file_path, O_RDONLY);
+	if (fd < 0)
+		FATAL(FILE_OPEN_FAILED, new_file_path);
 
-		if (png_parse_chunk_type(data_chunk, type))
-			BUG("failed to parse chunk type");
+	u_int32_t data_length;
+	char type[CHUNK_TYPE_LENGTH];
+	time_t unix_time;
+	u_int32_t crc;
 
-		if (png_parse_chunk_data_length(data_chunk, &length))
-			BUG("failed to parse chunk data length");
+	chunk_file_offset = lseek(fd, chunk_file_offset, SEEK_SET);
+	if (recoverable_read(fd, &data_length, sizeof(u_int32_t)) != sizeof(u_int32_t))
+		FATAL("failed to read chunk data length from file '%s'", new_file_path);
+	if (recoverable_read(fd, &type, sizeof(char) * CHUNK_TYPE_LENGTH) != sizeof(char) * CHUNK_TYPE_LENGTH)
+		FATAL("failed to read chunk type from file '%s'", new_file_path);
+	if (recoverable_read(fd, &unix_time, sizeof(time_t)) != sizeof(time_t))
+		FATAL("failed to read chunk timestamp from file '%s'", new_file_path);
 
-		if (png_parse_chunk_crc(data_chunk, &crc))
-			BUG("failed to parse chunk CRC");
+	// seek to CRC field
+	lseek(fd, chunk_file_offset + ntohl(data_length), SEEK_SET);
+	if (recoverable_read(fd, &crc, sizeof(u_int32_t)) != sizeof(u_int32_t))
+		FATAL("failed to read chunk CRC from file '%s'", new_file_path);
 
-		fprintf(stdout, "\nembedded message chunk:\n");
-		fprintf(stdout, "type: %.*s\t", CHUNK_TYPE_LENGTH, type);
-		fprintf(stdout, "length: %lu\t", (unsigned long) length);
-		fprintf(stdout, "crc: %lx\n", (unsigned long) crc);
+	unix_time = ntohl(unix_time);
+	struct tm *timeinfo = localtime(&unix_time);
 
-		// print hexdump
-		print_hex_dump(data_chunk->buff, data_chunk->len);
-	}
+	fprintf(stdout, "\nembedded chunk details:\n");
+	fprintf(stdout, "chunk file offset: %lu\n", chunk_file_offset);
+	fprintf(stdout, "chunk data length: %u (network byte order %#x)\n", ntohl(data_length), data_length);
+	fprintf(stdout, "chunk type: %.*s\n", CHUNK_TYPE_LENGTH, type);
+	fprintf(stdout, "timestamp: %s", asctime(timeinfo));
+	fprintf(stdout, "cyclic redundancy check: %u (network byte order %#x)\n", ntohl(crc), crc);
+
+	close(fd);
 }
 
 /**
@@ -460,27 +437,6 @@ static void print_file_summary(const char *file_path, int filename_table_len)
 	fprintf(stdout, "\n");
 
 	close(fd);
-}
-
-/**
- * Print a hexdump of a given buffer. The hexdump is formatted similar to
- * the hexdump tool.
- * */
-static void print_hex_dump(const char *data, size_t len)
-{
-	for (size_t i = 0; i < len; i += 16) {
-		fprintf(stdout, "%08lu  ", i);
-
-		for (size_t j = i; (j < i + 16) && (j < len); j++)
-			fprintf(stdout, "%02hhx ", data[j]);
-
-		fprintf(stdout, "%*s", (int)(i + 16 > len ? 3 * (i + 16 - len) + 1 : 1), " ");
-
-		fprintf(stdout, "|");
-		for (size_t j = i; (j < i + 16) && (j < len); j++)
-			fprintf(stdout, "%c", isprint(data[j]) ? data[j] : '.');
-		fprintf(stdout, "|\n");
-	}
 }
 
 /**
