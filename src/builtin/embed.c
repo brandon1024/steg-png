@@ -258,7 +258,7 @@ static long embed_data(int in_fd, int out_fd, int data_fd, const void *data,
 
 			IEND_found = 1;
 			u_int32_t crc = 0;
-			time_t unix_time = htonl(time(NULL));
+			u_int64_t unix_time = htonl(time(NULL));
 			unsigned char token = DATA_TOKEN;
 
 			chunk_pos = lseek(out_fd, 0, SEEK_CUR);
@@ -278,11 +278,11 @@ static long embed_data(int in_fd, int out_fd, int data_fd, const void *data,
 			crc = crc32_update(crc, chunk_type, sizeof(char) * CHUNK_TYPE_LENGTH);
 
 			// write header
-			if (recoverable_write(out_fd, &unix_time, sizeof(time_t)) != sizeof(time_t))
+			if (recoverable_write(out_fd, &unix_time, sizeof(u_int64_t)) != sizeof(u_int64_t))
 				FATAL("failed to write data chunk header to output file");
 			if (recoverable_write(out_fd, &token, sizeof(unsigned char)) != sizeof(unsigned char))
 				FATAL("failed to write data chunk nonce to output file");
-			crc = crc32_update(crc, (char *) &unix_time, sizeof(time_t));
+			crc = crc32_update(crc, (char *) &unix_time, sizeof(u_int64_t));
 			crc = crc32_update(crc, (char *) &token, sizeof(unsigned char));
 
 			if (data) {
@@ -372,7 +372,7 @@ static void print_summary(const char *original_file_path,
 
 	u_int32_t data_length;
 	char type[CHUNK_TYPE_LENGTH];
-	time_t unix_time;
+	u_int64_t unix_time;
 	u_int32_t crc;
 
 	chunk_file_offset = lseek(fd, chunk_file_offset, SEEK_SET);
@@ -380,7 +380,7 @@ static void print_summary(const char *original_file_path,
 		FATAL("failed to read chunk data length from file '%s'", new_file_path);
 	if (recoverable_read(fd, &type, sizeof(char) * CHUNK_TYPE_LENGTH) != sizeof(char) * CHUNK_TYPE_LENGTH)
 		FATAL("failed to read chunk type from file '%s'", new_file_path);
-	if (recoverable_read(fd, &unix_time, sizeof(time_t)) != sizeof(time_t))
+	if (recoverable_read(fd, &unix_time, sizeof(u_int64_t)) != sizeof(u_int64_t))
 		FATAL("failed to read chunk timestamp from file '%s'", new_file_path);
 
 	// seek to CRC field
@@ -389,7 +389,7 @@ static void print_summary(const char *original_file_path,
 		FATAL("failed to read chunk CRC from file '%s'", new_file_path);
 
 	unix_time = ntohl(unix_time);
-	struct tm *timeinfo = localtime(&unix_time);
+	struct tm *timeinfo = localtime((time_t *) &unix_time);
 
 	fprintf(stdout, "\nembedded chunk details:\n");
 	fprintf(stdout, "chunk file offset: %lu\n", chunk_file_offset);
