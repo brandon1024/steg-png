@@ -3,27 +3,28 @@
 #include <string.h>
 
 #include "parse-options.h"
+#include "str-array.h"
 #include "utils.h"
 
 #define USAGE_OPTIONS_WIDTH		24
 #define USAGE_OPTIONS_GAP		2
 
 
-static int parse_long_option(int argc, char *argv[], int arg_index,
-		const struct command_option options[]);
-static int parse_short_option(int argc, char *argv[], int arg_index,
-		const struct command_option options[]);
-static inline void array_shift(char *argv[], int arg_index, int *len);
+static int parse_long_option(int, char *[], int, const struct command_option[]);
+static int parse_short_option(int, char *[], int, const struct command_option[]);
+static int parse_subcommand(int, char *[], int, const struct command_option[]);
+static inline void array_shift(char *[], int, int *, int);
 
 int parse_options(int argc, char *argv[], const struct command_option options[],
-		int skip_first, int stop_on_unknown) {
+		int skip_first, int stop_on_unknown)
+{
 	int new_len = argc;
 	if (argc < 0)
 		BUG("parse_options argument vector length is negative");
 
-	// shift to remove first argument, which is name of program
+	// shift to remove first argument, typically name of program
 	if (skip_first)
-		array_shift(argv, 0, &new_len);
+		array_shift(argv, 0, &new_len, 1);
 
 	int arg_index = 0;
 	while (arg_index < new_len) {
@@ -31,7 +32,7 @@ int parse_options(int argc, char *argv[], const struct command_option options[],
 
 		// if argument is equal to `--`, stop processing
 		if (!strcmp(arg, "--")) {
-			array_shift(argv, arg_index, &new_len);
+			array_shift(argv, arg_index, &new_len, 1);
 			return new_len;
 		}
 
@@ -42,6 +43,11 @@ int parse_options(int argc, char *argv[], const struct command_option options[],
 		} else if (arg[0] == '-') {
 			// if argument is prefixed by `-`, it is short argument (may be multiple args combined combined)
 			shifted_args = parse_short_option(new_len, argv, arg_index, options);
+		} else {
+			// if argument is not an option, check to see if it is a valid command
+			int found = parse_subcommand(new_len, argv, arg_index, options);
+			if (found)
+				return new_len;
 		}
 
 		new_len -= shifted_args;
@@ -55,7 +61,8 @@ int parse_options(int argc, char *argv[], const struct command_option options[],
 }
 
 static int parse_long_option(int argc, char *argv[], int arg_index,
-		const struct command_option options[]) {
+		const struct command_option options[])
+{
 	// skip '--' prefix
 	char *arg = argv[arg_index] + 2;
 	int new_len = argc;
@@ -66,7 +73,7 @@ static int parse_long_option(int argc, char *argv[], int arg_index,
 
 		// if the argument is a boolean arg, set value to one and return
 		if (op->type == OPTION_BOOL_T && !strcmp(arg, op->l_flag)) {
-			array_shift(argv, arg_index, &new_len);
+			array_shift(argv, arg_index, &new_len, 1);
 			*(int *) op->arg_value = 1;
 			break;
 		}
@@ -88,20 +95,23 @@ static int parse_long_option(int argc, char *argv[], int arg_index,
 
 			if (op->type == OPTION_INT_T) {
 				char *tailptr = NULL;
-				long arg_value = strtol(arg, &tailptr, 10);
+				long arg_value = strtol(arg, &tailptr, 0);
 
 				// verify that integer was parsed successfully
 				if (tailptr == (arg + strlen(arg))) {
-					array_shift(argv, arg_index, &new_len);
-					array_shift(argv, arg_index, &new_len);
+					array_shift(argv, arg_index, &new_len, 2);
 					*(long *) op->arg_value = arg_value;
 					break;
 				}
 			} else if (op->type == OPTION_STRING_T) {
-				array_shift(argv, arg_index, &new_len);
-				array_shift(argv, arg_index, &new_len);
+				array_shift(argv, arg_index, &new_len, 2);
 
 				*(char **) op->arg_value = arg;
+				break;
+			} else if (op->type == OPTION_STRING_LIST_T) {
+				array_shift(argv, arg_index, &new_len, 2);
+
+				str_array_push(op->arg_value, arg, NULL);
 				break;
 			}
 		} else if (strlen(arg) > flag_len && arg[flag_len] == '=') {
@@ -110,18 +120,23 @@ static int parse_long_option(int argc, char *argv[], int arg_index,
 
 			if (op->type == OPTION_INT_T) {
 				char *tailptr = NULL;
-				long arg_value = strtol(arg, &tailptr, 10);
+				long arg_value = strtol(arg, &tailptr, 0);
 
 				// verify that integer was parsed successfully
 				if (tailptr == (arg + strlen(arg))) {
-					array_shift(argv, arg_index, &new_len);
+					array_shift(argv, arg_index, &new_len, 1);
 					*(long *) op->arg_value = arg_value;
 					break;
 				}
 			} else if (op->type == OPTION_STRING_T) {
-				array_shift(argv, arg_index, &new_len);
+				array_shift(argv, arg_index, &new_len, 1);
 
 				*(char **) op->arg_value = arg;
+				break;
+			} else if (op->type == OPTION_STRING_LIST_T) {
+				array_shift(argv, arg_index, &new_len, 1);
+
+				str_array_push(op->arg_value, arg, NULL);
 				break;
 			}
 		}
@@ -131,21 +146,29 @@ static int parse_long_option(int argc, char *argv[], int arg_index,
 }
 
 static int parse_short_option(int argc, char *argv[], int arg_index,
-		const struct command_option options[]) {
+		const struct command_option options[])
+{
 	int new_len = argc;
 
 	// skip '-' prefix
 	for (char *arg = argv[arg_index] + 1; *arg; arg++) {
 		for (const struct command_option *op = options; op->type != OPTION_END; op++) {
-			if (!op->s_flag || op->s_flag != *arg)
+			if (!op->s_flag || op->s_flag != *arg) {
+				// if the option is undefined, stop
+				const struct command_option *next = op + 1;
+				if (next->type == OPTION_END)
+					return argc - new_len;
+
 				continue;
+			}
 
 			if (op->type == OPTION_BOOL_T) {
 				*(int *) op->arg_value = 1;
 				break;
 			}
 
-			if (op->type == OPTION_INT_T || op->type == OPTION_STRING_T) {
+			if (op->type == OPTION_INT_T || op->type == OPTION_STRING_T ||
+				op->type == OPTION_STRING_LIST_T) {
 				// intermediate options that accept values are disallowed
 				if (*(arg + 1))
 					return argc - new_len;
@@ -158,31 +181,58 @@ static int parse_short_option(int argc, char *argv[], int arg_index,
 			if (op->type == OPTION_INT_T) {
 				arg = argv[arg_index + 1];
 				char *tailptr = NULL;
-				long arg_value = strtol(arg, &tailptr, 10);
+				long arg_value = strtol(arg, &tailptr, 0);
 
 				// verify that integer was parsed successfully
 				if (tailptr == (arg + strlen(arg))) {
-					array_shift(argv, arg_index, &new_len);
-					array_shift(argv, arg_index, &new_len);
+					array_shift(argv, arg_index, &new_len, 2);
 
 					*(long *) op->arg_value = arg_value;
-					return argc - new_len;
 				}
+
+				return argc - new_len;
 			}
 
 			if (op->type == OPTION_STRING_T) {
 				arg = argv[arg_index + 1];
-				array_shift(argv, arg_index, &new_len);
-				array_shift(argv, arg_index, &new_len);
+				array_shift(argv, arg_index, &new_len, 2);
 
 				*(char **) op->arg_value = arg;
+				return argc - new_len;
+			}
+
+			if (op->type == OPTION_STRING_LIST_T) {
+				arg = argv[arg_index + 1];
+				array_shift(argv, arg_index, &new_len, 2);
+
+				str_array_push(op->arg_value, arg, NULL);
 				return argc - new_len;
 			}
 		}
 	}
 
-	array_shift(argv, arg_index, &new_len);
+	array_shift(argv, arg_index, &new_len, 1);
 	return argc - new_len;
+}
+
+static int parse_subcommand(int argc, char *argv[], int arg_index,
+		const struct command_option options[])
+{
+	for (const struct command_option *op = options; op->type != OPTION_END; op++) {
+		if (op->type != OPTION_COMMAND_T)
+			continue;
+
+		char *arg = argv[arg_index];
+		if (!strcmp(arg, op->str_name)) {
+			if (op->arg_value) {
+				*(int *) op->arg_value = 1;
+			}
+
+			return 1;
+		}
+	}
+
+	return 0;
 }
 
 void show_usage(const struct usage_string cmd_usage[], int err,
@@ -285,7 +335,7 @@ void show_usage_with_options(const struct usage_string cmd_usage[],
 	va_start(varargs, optional_message_format);
 
 	variadic_show_usage_with_options(cmd_usage, opts, optional_message_format,
-									 varargs, err);
+			varargs, err);
 
 	va_end(varargs);
 }
@@ -298,12 +348,15 @@ void variadic_show_usage_with_options(const struct usage_string cmd_usage[],
 	show_options(opts, err);
 }
 
-static inline void array_shift(char *argv[], int arg_index, int *len) {
+static inline void array_shift(char *argv[], int arg_index, int *len, int count)
+{
 	if (*len <= 0 || arg_index >= *len)
 		return;
 
-	for (int index = arg_index; index < *len - 1; index++)
-		argv[index] = argv[index + 1];
-	*len = *len - 1;
-	argv[*len] = NULL;
+	int new_len = *len - count;
+	for (int index = arg_index; index < new_len; index++)
+		argv[index] = argv[index + count];
+
+	*len = new_len;
+	argv[new_len] = NULL;
 }

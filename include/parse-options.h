@@ -1,5 +1,5 @@
-#ifndef DEMS_CLI_PARSE_OPTIONS
-#define DEMS_CLI_PARSE_OPTIONS
+#ifndef STEG_PNG_PARSE_OPTIONS_H
+#define STEG_PNG_PARSE_OPTIONS_H
 
 #include <stdarg.h>
 
@@ -7,6 +7,7 @@ enum opt_type {
 	OPTION_BOOL_T,
 	OPTION_INT_T,
 	OPTION_STRING_T,
+	OPTION_STRING_LIST_T,
 	OPTION_COMMAND_T,
 	OPTION_GROUP_T,
 	OPTION_END
@@ -30,13 +31,16 @@ struct usage_string {
 #define OPT_SHORT_BOOL(S,D,V)			{ (S), NULL,  NULL, (D), OPTION_BOOL_T, (V) }
 #define OPT_SHORT_INT(S,D,V)			{ (S), NULL,  NULL, (D), OPTION_INT_T, (V) }
 #define OPT_SHORT_STRING(S,N,D,V)		{ (S), NULL,  (N), (D), OPTION_STRING_T, (V) }
+#define OPT_SHORT_STRING_LIST(S,N,D,V)		{ (S), NULL,  (N), (D), OPTION_STRING_LIST_T, (V) }
 #define OPT_LONG_BOOL(L,D,V)			{ 0, (L),  NULL, (D), OPTION_BOOL_T, (V) }
 #define OPT_LONG_INT(L,D,V)				{ 0, (L),  NULL, (D), OPTION_INT_T, (V) }
 #define OPT_LONG_STRING(L,N,D,V)		{ 0, (L),  (N), (D), OPTION_STRING_T, (V) }
+#define OPT_LONG_STRING_LIST(L,N,D,V)		{ 0, (L),  (N), (D), OPTION_STRING_LIST_T, (V) }
 #define OPT_BOOL(S,L,D,V)				{ (S), (L), NULL, (D), OPTION_BOOL_T, (V) }
 #define OPT_INT(S,L,D,V)				{ (S), (L), NULL, (D), OPTION_INT_T, (V) }
 #define OPT_STRING(S,L,N,D,V)			{ (S), (L), (N), (D), OPTION_STRING_T, (V) }
-#define OPT_CMD(N,D)					{ 0, NULL, (N), (D), OPTION_COMMAND_T, NULL }
+#define OPT_STRING_LIST(S,L,N,D,V)			{ (S), (L), (N), (D), OPTION_STRING_LIST_T, (V) }
+#define OPT_CMD(N,D,V)					{ 0, NULL, (N), (D), OPTION_COMMAND_T, (V) }
 #define OPT_GROUP(N)					{ 0, NULL, NULL, N, OPTION_GROUP_T, NULL }
 #define OPT_END()						{ 0, NULL, NULL, NULL, OPTION_END, NULL }
 
@@ -106,4 +110,4 @@ void variadic_show_usage_with_options(const struct usage_string cmd_usage[],
 		const struct command_option opts[],
 		const char *optional_message_format, va_list varargs, int err);
 
-#endif //DEMS_CLI_PARSE_OPTIONS
+#endif //STEG_PNG_PARSE_OPTIONS_H
