@@ -19,8 +19,9 @@
 
 static int embed_message(const char *, const char *, const char *, int);
 static int embed_file(const char *, const char *, const char *, int);
-static long embed_data(int, int, int, const void *, size_t);
-static void print_summary(const char *, const char *, size_t);
+static off_t embed_data(int, int, int, const void *, size_t);
+static u_int32_t write_and_update_crc(int, const void *, size_t, u_int32_t);
+static void print_summary(const char *, const char *, off_t);
 static void print_file_summary(const char *, int);
 static int compute_md5_sum(int, unsigned char[]);
 
@@ -33,9 +34,9 @@ int cmd_embed(int argc, char *argv[])
 	int quiet = 0;
 
 	const struct usage_string main_cmd_usage[] = {
-			USAGE("steg-png --embed (-m | --message <message>) [-o | --output <file>] <file>"),
-			USAGE("steg-png --embed (-f | --file <file>) [-o | --output <file>] <file>"),
-			USAGE("steg-png --embed (-h | --help)"),
+			USAGE("steg-png embed (-m | --message <message>) [-o | --output <file>] <file>"),
+			USAGE("steg-png embed (-f | --file <file>) [-o | --output <file>] <file>"),
+			USAGE("steg-png embed (-h | --help)"),
 			USAGE_END()
 	};
 
@@ -149,7 +150,7 @@ static int embed_message(const char *file_path, const char *output_file,
  * The provided file will be read in a chunk of type "stEG" that is located
  * before the IEND chunk.
  *
- * If quiet is zero, the summary details are suppressed. Error messages will
+ * If quiet is nonzero, the summary details are suppressed. Error messages will
  * still be printed to stderr.
  * */
 static int embed_file(const char *file_path, const char *output_file,
@@ -204,7 +205,7 @@ static int embed_file(const char *file_path, const char *output_file,
  * Returns the position in the output file of the first byte of the embedded chunk.
  * This value can be used to seek to that position in the file for further use.
  * */
-static long embed_data(int in_fd, int out_fd, int data_fd, const void *data,
+static off_t embed_data(int in_fd, int out_fd, int data_fd, const void *data,
 		size_t message_len)
 {
 	if (data && data_fd != -1)
@@ -234,77 +235,58 @@ static long embed_data(int in_fd, int out_fd, int data_fd, const void *data,
 	if (recoverable_write(out_fd, PNG_SIG, SIGNATURE_LENGTH) != SIGNATURE_LENGTH)
 		FATAL("failed to write PNG file signature to output file");
 
-	int IEND_found = 0;
-	char type_buffer[CHUNK_TYPE_LENGTH];
-	char buffer[BUFF_LEN];
-	struct strbuf chunk_buffer;
-	long chunk_pos = 0;
+	int64_t unix_time = time(NULL);
+	unsigned char temporary_buffer[BUFF_LEN];
+	off_t embedded_chunk_offset = 0;
 
-	strbuf_init(&chunk_buffer);
-	do {
-		int has_next_chunk = chunk_iterator_next_chunk(&ctx, &chunk_buffer);
-		if (has_next_chunk < 0)
-			DIE("failed to read corrupted chunk in input file");
+	int has_next_chunk, IEND_found = 0;
+	while ((has_next_chunk = chunk_iterator_has_next(&ctx)) > 0) {
+		if (chunk_iterator_next(&ctx) != 0)
+			FATAL("unexpected error while parsing input file");
 
-		if (!has_next_chunk)
-			break;
+		struct png_chunk_detail chunk = ctx.current_chunk;
 
-		if (png_parse_chunk_type(&chunk_buffer, type_buffer))
-			DIE("unexpected chunk type in input file");
-
-		if (!memcmp(IEND_CHUNK_TYPE, type_buffer, CHUNK_TYPE_LENGTH)) {
+		// if the current chunk is the IEND chunk, then write our chunk
+		if (!memcmp(chunk.chunk_type, IEND_CHUNK_TYPE, CHUNK_TYPE_LENGTH)) {
 			if (IEND_found)
-				DIE("non-compliant input file: IEND chunk found twice in input file");
+				DIE("non-compliant input file with IEND chunk defined twice (does not conform to RFC 2083)");
+
+			embedded_chunk_offset = lseek(out_fd, 0, SEEK_CUR);
+			if (embedded_chunk_offset < 0)
+				FATAL("failed to read the file position in the output file");
 
 			IEND_found = 1;
 			u_int32_t crc = 0;
-			u_int64_t unix_time = htonl(time(NULL));
-			unsigned char token = DATA_TOKEN;
-
-			chunk_pos = lseek(out_fd, 0, SEEK_CUR);
-			if (chunk_pos < 0)
-				FATAL("failed to read the file position in the output file");
 
 			// write data size
-			unsigned long header_len = sizeof(time_t) + sizeof(unsigned char);
+			unsigned long header_len = sizeof(int64_t) + sizeof(unsigned char);
 			u_int32_t len_net_order = htonl(file_size + header_len);
 			if (recoverable_write(out_fd, &len_net_order, sizeof(u_int32_t)) != sizeof(u_int32_t))
 				FATAL("failed to write data chunk length to output file");
 
 			// write chunk type
 			char chunk_type[CHUNK_TYPE_LENGTH] = {'s', 't', 'E', 'G'};
-			if (recoverable_write(out_fd, chunk_type, sizeof(char) * CHUNK_TYPE_LENGTH) != sizeof(char) * CHUNK_TYPE_LENGTH)
-				FATAL("failed to write data chunk length to output file");
-			crc = crc32_update(crc, chunk_type, sizeof(char) * CHUNK_TYPE_LENGTH);
+			crc = write_and_update_crc(out_fd, chunk_type, sizeof(char) * CHUNK_TYPE_LENGTH, crc);
 
-			// write header
-			if (recoverable_write(out_fd, &unix_time, sizeof(u_int64_t)) != sizeof(u_int64_t))
-				FATAL("failed to write data chunk header to output file");
-			if (recoverable_write(out_fd, &token, sizeof(unsigned char)) != sizeof(unsigned char))
-				FATAL("failed to write data chunk nonce to output file");
-			crc = crc32_update(crc, (char *) &unix_time, sizeof(u_int64_t));
-			crc = crc32_update(crc, (char *) &token, sizeof(unsigned char));
+			// write header (time and token)
+			unsigned char token = DATA_TOKEN;
+			crc = write_and_update_crc(out_fd, &unix_time, sizeof(u_int64_t), crc);
+			crc = write_and_update_crc(out_fd, &token, sizeof(unsigned char), crc);
 
 			if (data) {
-				if (recoverable_write(out_fd, data, message_len) != message_len)
-					FATAL("failed to write message to output file descriptor %d", out_fd);
-
-				crc = crc32_update(crc, data, message_len);
+				crc = write_and_update_crc(out_fd, data, message_len, crc);
 			} else {
 				// write chunk data and compute CRC
-				u_int32_t total_bytes_read = 0;
+				char buffer[BUFF_LEN];
+				size_t total_bytes_read = 0;
 				ssize_t bytes_read = 0;
 				while ((bytes_read = recoverable_read(data_fd, buffer, BUFF_LEN)) > 0) {
 					total_bytes_read += bytes_read;
-
-					if (recoverable_write(out_fd, buffer, bytes_read) != bytes_read)
-						FATAL("failed to write new chunk to output file descriptor %d", out_fd);
-					crc = crc32_update(crc, buffer, bytes_read);
+					crc = write_and_update_crc(out_fd, buffer, bytes_read, crc);
 				}
 
 				if (bytes_read < 0)
 					FATAL("failed to read from fd %d", data_fd);
-
 				if (total_bytes_read != file_size)
 					FATAL("stat file size mismatch");
 			}
@@ -315,20 +297,55 @@ static long embed_data(int in_fd, int out_fd, int data_fd, const void *data,
 				FATAL("failed to write CRC field to output file");
 		}
 
-		// write the chunk
-		if (recoverable_write(out_fd, chunk_buffer.buff, chunk_buffer.len) != chunk_buffer.len)
-			FATAL("failed to write chunk to output file");
+		// write the chunk data length to output file
+		u_int32_t data_len_net_order = htonl(chunk.data_length);
+		if (recoverable_write(out_fd, &data_len_net_order, sizeof(u_int32_t)) != sizeof(u_int32_t))
+			FATAL("failed to write data length field to output file");
 
-		strbuf_clear(&chunk_buffer);
-	} while(1);
+		// write the chunk type to output file
+		u_int32_t chunk_crc = 0;
+		chunk_crc = write_and_update_crc(out_fd, chunk.chunk_type, sizeof(char) * CHUNK_TYPE_LENGTH, chunk_crc);
+
+		// write the chunk data to output file
+		while (1) {
+			ssize_t bytes_read = chunk_iterator_read_data(&ctx, temporary_buffer, BUFF_LEN);
+			if (bytes_read < 0)
+				FATAL("unexpected error while parsing input file");
+			if (bytes_read == 0)
+				break;
+
+			chunk_crc = write_and_update_crc(out_fd, temporary_buffer, bytes_read, chunk_crc);
+		}
+
+		if (chunk_crc != chunk.chunk_crc)
+			WARN("%.*s chunk at file offset %d has invalid CRC -- file may be corrupted",
+					CHUNK_TYPE_LENGTH, chunk.chunk_type, ctx.chunk_file_offset);
+
+		// write the chunk CRC to output file
+		u_int32_t crc_net_order = htonl(chunk.chunk_crc);
+		if (recoverable_write(out_fd, &crc_net_order, sizeof(u_int32_t)) != sizeof(u_int32_t))
+			FATAL("failed to write CRC field to output file");
+	}
+
+	if (has_next_chunk < 0)
+		FATAL("unexpected error while parsing input file");
 
 	if (!IEND_found)
-		DIE("input file missing IEND chunk");
+		DIE("non-compliant input file no IEND chunk defined (does not conform to RFC 2083)");
 
 	chunk_iterator_destroy_ctx(&ctx);
-	strbuf_release(&chunk_buffer);
+	return embedded_chunk_offset;
+}
 
-	return chunk_pos;
+/**
+ * Write arbitrary data to a given file descriptor, and return an updated CRC.
+ * */
+static u_int32_t write_and_update_crc(int fd, const void *data, size_t length, u_int32_t crc)
+{
+	if (recoverable_write(fd, data, length) != length)
+		FATAL("failed to write new chunk to output file descriptor %d", fd);
+
+	return crc32_update(crc, data, length);
 }
 
 /**
@@ -346,7 +363,7 @@ static long embed_data(int in_fd, int out_fd, int data_fd, const void *data,
  * cyclic redundancy check: <32-bit CRC> (network byte order <32-bit CRC>)
  * */
 static void print_summary(const char *original_file_path,
-		const char *new_file_path, size_t chunk_file_offset)
+		const char *new_file_path, off_t chunk_file_offset)
 {
 	const char *filename_from = strrchr(original_file_path, '/');
 	filename_from = !filename_from ? original_file_path : filename_from + 1;
@@ -388,11 +405,11 @@ static void print_summary(const char *original_file_path,
 	if (recoverable_read(fd, &crc, sizeof(u_int32_t)) != sizeof(u_int32_t))
 		FATAL("failed to read chunk CRC from file '%s'", new_file_path);
 
-	unix_time = ntohl(unix_time);
+	unix_time = unix_time;
 	struct tm *timeinfo = localtime((time_t *) &unix_time);
 
 	fprintf(stdout, "\nembedded chunk details:\n");
-	fprintf(stdout, "chunk file offset: %lu\n", chunk_file_offset);
+	fprintf(stdout, "chunk file offset: %llu\n", (unsigned long long int)chunk_file_offset);
 	fprintf(stdout, "chunk data length: %u (network byte order %#x)\n", ntohl(data_length), data_length);
 	fprintf(stdout, "chunk type: %.*s\n", CHUNK_TYPE_LENGTH, type);
 	fprintf(stdout, "timestamp: %s", asctime(timeinfo));
@@ -431,7 +448,7 @@ static void print_file_summary(const char *file_path, int filename_table_len)
 		FATAL("failed to compute md5 hash of file '%s'", file_path);
 
 	fprintf(stdout, "%s %*s", filename_from, filename_table_len, " ");
-	fprintf(stdout, "%o %lu ", st.st_mode, st.st_size);
+	fprintf(stdout, "%o %lld ", st.st_mode, (unsigned long long int)st.st_size);
 	for (size_t i = 0; i < MD5_DIGEST_SIZE; i++)
 		fprintf(stdout, "%02x", md5_hash[i]);
 	fprintf(stdout, "\n");
@@ -441,7 +458,8 @@ static void print_file_summary(const char *file_path, int filename_table_len)
 
 /**
  * Compute the md5 sum of an open file. The md5_hash argument must be an array of
- * length MD5_DIGEST_SIZE.
+ * length MD5_DIGEST_SIZE. The file offset is assumed to be positioned at
+ * byte zero.
  * */
 static int compute_md5_sum(int fd, unsigned char md5_hash[])
 {

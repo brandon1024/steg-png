@@ -24,9 +24,9 @@ int main(int argc, char *argv[])
 
 	const struct command_option main_cmd_options[] = {
 			OPT_GROUP("subcommands"),
-			OPT_CMD("embed", "embed a message in a PNG image"),
-			OPT_CMD("extract", "extract a message in a PNG image"),
-			OPT_CMD("inspect", "inspect the contents of a PNG image"),
+			OPT_CMD("embed", "embed a message in a PNG image", NULL),
+			OPT_CMD("extract", "extract a message in a PNG image", NULL),
+			OPT_CMD("inspect", "inspect the contents of a PNG image", NULL),
 			OPT_GROUP("options"),
 			OPT_BOOL('h', "help", "show help and exit", &help),
 			OPT_END()
