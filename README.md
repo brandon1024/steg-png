@@ -49,16 +49,16 @@ $ steg-png --help
 Using the tool is simple.
 
 ```
-usage: steg-png --embed (-m | --message <message>) [-o | --output <file>] <file>
-   or: steg-png --embed (-f | --file <file>) [-o | --output <file>] <file>
-   or: steg-png --embed (-h | --help)
+usage: steg-png embed (-m | --message <message>) [-o | --output <file>] <file>
+   or: steg-png embed (-f | --file <file>) [-o | --output <file>] <file>
+   or: steg-png embed (-h | --help)
 
     -m, --message <message>
                         specify the message to embed in the png image
     -f, --file <file>   specify a file to embed in the png image
     -o, --output <file>
                         output to a specific file
-    -q, --quiet         suppress output to stdout
+    -q, --quiet         suppress informational summary to stdout
     -h, --help          show help and exit
 ```
 

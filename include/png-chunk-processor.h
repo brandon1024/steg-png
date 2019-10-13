@@ -106,7 +106,7 @@ int chunk_iterator_next(struct chunk_iterator_ctx *ctx);
  * all bytes have been read for the current chunk, returns zero and the buffer
  * is left unchanged. Otherwise returns the number of bytes read into the buffer.
  * */
-ssize_t chunk_iterator_read_data(struct chunk_iterator_ctx *ctx, unsigned char* buffer, size_t length);
+ssize_t chunk_iterator_read_data(struct chunk_iterator_ctx *ctx, unsigned char *buffer, size_t length);
 
 /**
  * Get the length of the current chunk. The length is written to 'len'.
