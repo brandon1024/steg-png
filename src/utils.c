@@ -29,7 +29,7 @@ NORETURN void FATAL(const char *fmt, ...)
 	va_list varargs;
 
 	va_start(varargs, fmt);
-	print_message(stderr, "Fatal Error: ", fmt, varargs);
+	print_message(stderr, "fatal: ", fmt, varargs);
 	va_end(varargs);
 
 	exit_routine(EXIT_FAILURE);
@@ -51,7 +51,7 @@ void WARN(const char *fmt, ...)
 	va_list varargs;
 
 	va_start(varargs, fmt);
-	print_message(stderr, "Warn: ", fmt, varargs);
+	print_message(stderr, "warn: ", fmt, varargs);
 	va_end(varargs);
 }
 
