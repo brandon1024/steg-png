@@ -62,5 +62,7 @@ usage: steg-png embed (-m | --message <message>) [-o | --output <file>] <file>
     -h, --help          show help and exit
 ```
 
+// TODO Using steg-png with GPG
+
 ## License
 This project is free software and is available under the [MIT License](https://opensource.org/licenses/MIT).

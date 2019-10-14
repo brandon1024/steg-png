@@ -23,24 +23,11 @@
 #include <stdint.h>
 
 /**
- * Compute CRC-32 value of LEN bytes long BUF, and return it.
- * */
-uint32_t crc32(const char *buf, size_t len);
-
-/**
  * Incrementally update CRC-32 value CRC using LEN bytes long BUF.  In
  * the first call, use 0 as the value for CRC.  Return the updated
  * CRC-32 value.
  * */
 uint32_t crc32_update(uint32_t crc, const char *buf, size_t len);
-
-/**
- * Compute modified-CRC-32 value of LEN bytes long BUF, and return it.
- * The "modification" is to avoid the initial and final XOR operation.
- * Due to historic implementation errors, this variant is sometimes
- * used (i.e., in RFC 3961).
- * */
-uint32_t crc32_no_xor(const char *buf, size_t len);
 
 /**
  * Incrementally update modified-CRC-32 value CRC using LEN bytes long
