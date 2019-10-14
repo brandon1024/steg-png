@@ -76,17 +76,7 @@ uint32_t crc32_update_no_xor(uint32_t crc, const char *buf, size_t len)
 	return crc;
 }
 
-uint32_t crc32_no_xor(const char *buf, size_t len)
-{
-	return crc32_update_no_xor (0L, buf, len);
-}
-
 uint32_t crc32_update(uint32_t crc, const char *buf, size_t len)
 {
 	return crc32_update_no_xor (crc ^ 0xffffffff, buf, len) ^ 0xffffffff;
-}
-
-uint32_t crc32(const char *buf, size_t len)
-{
-	return crc32_update (0L, buf, len);
 }

@@ -13,19 +13,19 @@
 #include "parse-options.h"
 #include "png-chunk-processor.h"
 #include "utils.h"
+#include "zlib.h"
 
 #define BUFF_LEN 1024
-#define DATA_TOKEN (0x4c)
+#define DEFLATE_CHUNK_DATA_LENGTH 8192
 
 struct chunk_summary {
-	off_t file_offset;
-	u_int32_t data_length;
-	char chunk_type[CHUNK_TYPE_LENGTH];
-	u_int64_t unix_time;
-	u_int32_t crc;
+	size_t bytes_in;
+	size_t bytes_out;
+	double compression_ratio;
+	int chunks_written;
 };
 
-static int embed(const char *, const char *, const char *, const char *,
+static int embed(const char *, const char *, const char *, const char *, int,
 		struct chunk_summary *);
 static void print_summary(const char *, const char *, struct chunk_summary *);
 
@@ -36,10 +36,11 @@ int cmd_embed(int argc, char *argv[])
 	const char *file_to_embed = NULL;
 	int help = 0;
 	int quiet = 0;
+	int compression_level = Z_DEFAULT_COMPRESSION;
 
 	const struct usage_string main_cmd_usage[] = {
-			USAGE("steg-png embed (-m | --message <message>) [-o | --output <file>] <file>"),
-			USAGE("steg-png embed (-f | --file <file>) [-o | --output <file>] <file>"),
+			USAGE("steg-png embed [options] (-m | --message <message>) <file>"),
+			USAGE("steg-png embed [options] (-f | --file <file>) <file>"),
 			USAGE("steg-png embed (-h | --help)"),
 			USAGE_END()
 	};
@@ -48,6 +49,7 @@ int cmd_embed(int argc, char *argv[])
 			OPT_STRING('m', "message", "message", "specify the message to embed in the png image", &message),
 			OPT_STRING('f', "file", "file", "specify a file to embed in the png image", &file_to_embed),
 			OPT_STRING('o', "output", "file", "output to a specific file", &output_file),
+			OPT_INT('l', "compression-level", "alternate compression level (0 none, 1 fastest - 9 slowest)", &compression_level),
 			OPT_BOOL('q', "quiet", "suppress informational summary to stdout", &quiet),
 			OPT_BOOL('h', "help", "show help and exit", &help),
 			OPT_END()
@@ -69,6 +71,11 @@ int cmd_embed(int argc, char *argv[])
 		return 1;
 	}
 
+	if (compression_level != Z_DEFAULT_COMPRESSION && (compression_level > 9 || compression_level < 0)) {
+		show_usage_with_options(main_cmd_usage, main_cmd_options, 1, "invalid compression level %d", compression_level);
+		return 1;
+	}
+
 	struct strbuf output_file_path;
 	int ret = 0;
 
@@ -80,8 +87,14 @@ int cmd_embed(int argc, char *argv[])
 		strbuf_attach_fmt(&output_file_path, "%s.steg", argv[0]);
 
 	// embed the message/file in a chunk, and get a summary of the chunk that was embedded
-	struct chunk_summary result;
-	ret = embed(argv[0], output_file_path.buff, file_to_embed, message, &result);
+	struct chunk_summary result = {
+			.chunks_written = 0,
+			.bytes_in = 0,
+			.bytes_out = 0,
+			.compression_ratio = 0
+	};
+
+	ret = embed(argv[0], output_file_path.buff, file_to_embed, message, compression_level, &result);
 
 	if (!quiet)
 		print_summary(argv[0], output_file_path.buff, &result);
@@ -91,7 +104,7 @@ int cmd_embed(int argc, char *argv[])
 	return ret;
 }
 
-static int embed_data(int, int, int, const void *, size_t, struct chunk_summary *);
+static int embed_data(int, int, int, struct strbuf *, int, struct chunk_summary *);
 
 /**
  * Embed a file or message into a PNG image with the file path `input_file`, and
@@ -109,7 +122,8 @@ static int embed_data(int, int, int, const void *, size_t, struct chunk_summary 
  * its final location if successful.
  * */
 static int embed(const char *input_file, const char *output_file,
-		const char *file_to_embed, const char *message, struct chunk_summary *result)
+		const char *file_to_embed, const char *message, int compression_level,
+		struct chunk_summary *result)
 {
 	// stat and open descriptor to input file
 	struct stat st;
@@ -134,7 +148,7 @@ static int embed(const char *input_file, const char *output_file,
 		if (file_to_embed_fd < 0)
 			FATAL(FILE_OPEN_FAILED, file_to_embed);
 
-		embed_data(in_fd, tmp_fd, file_to_embed_fd, NULL, 0, result);
+		embed_data(in_fd, tmp_fd, file_to_embed_fd, NULL, compression_level, result);
 		close(file_to_embed_fd);
 	} else {
 		// if no message was given, take from stdin
@@ -152,7 +166,7 @@ static int embed(const char *input_file, const char *output_file,
 			strbuf_attach_str(&message_buf, message);
 		}
 
-		embed_data(in_fd, tmp_fd, -1, message_buf.buff, message_buf.len, result);
+		embed_data(in_fd, tmp_fd, -1, &message_buf, compression_level, result);
 		strbuf_release(&message_buf);
 	}
 
@@ -193,6 +207,68 @@ static inline u_int32_t write_and_update_crc(int fd, const void *data, size_t le
 }
 
 /**
+ * Write the entire chunk from the current chunk_iterator context to a file
+ * with the given file descriptor.
+ * */
+void write_chunk_to_file_from_ctx(int dest_fd, struct chunk_iterator_ctx *ctx)
+{
+	struct png_chunk_detail chunk = ctx->current_chunk;
+	unsigned char temporary_buffer[BUFF_LEN];
+
+	// write the chunk data length to output file
+	u_int32_t data_len_net_order = htonl(chunk.data_length);
+	if (recoverable_write(dest_fd, &data_len_net_order, sizeof(u_int32_t)) != sizeof(u_int32_t))
+		FATAL("failed to write data length field to output file");
+
+	// write the chunk type to output file
+	u_int32_t chunk_crc = 0;
+	chunk_crc = write_and_update_crc(dest_fd, chunk.chunk_type,
+			sizeof(char) * CHUNK_TYPE_LENGTH, chunk_crc);
+
+	// write the chunk data to output file
+	while (1) {
+		ssize_t bytes_read = chunk_iterator_read_data(ctx, temporary_buffer, BUFF_LEN);
+		if (bytes_read < 0)
+			FATAL("unexpected error while parsing input file");
+		if (bytes_read == 0)
+			break;
+
+		chunk_crc = write_and_update_crc(dest_fd, temporary_buffer, bytes_read, chunk_crc);
+	}
+
+	if (chunk_crc != chunk.chunk_crc)
+		WARN("%.*s chunk at file offset %d has invalid CRC -- file may be corrupted",
+			 CHUNK_TYPE_LENGTH, chunk.chunk_type, ctx->chunk_file_offset);
+
+	// write the chunk CRC to output file
+	u_int32_t crc_net_order = htonl(chunk.chunk_crc);
+	if (recoverable_write(dest_fd, &crc_net_order, sizeof(u_int32_t)) != sizeof(u_int32_t))
+		FATAL("failed to write CRC field to output file");
+}
+
+void write_chunk_to_file_from_buffer(int dest_fd, void *buffer, size_t length)
+{
+	u_int32_t crc = 0;
+
+	// write length
+	u_int32_t len_net_order = htonl((u_int32_t) length);
+	if (recoverable_write(dest_fd, &len_net_order, sizeof(u_int32_t)) != sizeof(u_int32_t))
+		FATAL("failed to write data length field to output file");
+
+	// write type
+	char chunk_type[] = { 's', 't', 'E', 'G' };
+	crc = write_and_update_crc(dest_fd, chunk_type, CHUNK_TYPE_LENGTH, crc);
+
+	// write data
+	crc = write_and_update_crc(dest_fd, buffer, length, crc);
+
+	// write crc
+	u_int32_t crc_net_order = htonl(crc);
+	if (recoverable_write(dest_fd, &crc_net_order, sizeof(u_int32_t)) != sizeof(u_int32_t))
+		FATAL("failed to write CRC field to output file");
+}
+
+/**
  * Embed arbitrary data from a file or string to a PNG file.
  *
  * in_fd must be an open file descriptor to the source PNG file.
@@ -203,28 +279,15 @@ static inline u_int32_t write_and_update_crc(int fd, const void *data, size_t le
  * that will be embedded. Otherwise, if embedding a string message, message must
  * be non-null.
  *
- * Returns the position in the output file of the first byte of the embedded chunk.
- * This value can be used to seek to that position in the file for further use.
+ * Returns the number of chunks created.
  * */
-static int embed_data(int in_fd, int out_fd, int data_fd, const void *data,
-		size_t message_len, struct chunk_summary *result)
+static int embed_data(int in_fd, int out_fd, int data_fd, struct strbuf *data,
+		int compression_level, struct chunk_summary *result)
 {
 	if (data && data_fd != -1)
 		BUG("either data or data_fd must be defined, not both");
 	if (!data && data_fd == -1)
 		BUG("either data or data_fd must be defined");
-
-	// compute the chunk data length
-	u_int32_t file_size = 0;
-	if (data) {
-		file_size = message_len;
-	} else {
-		struct stat st;
-		if (fstat(data_fd, &st) && errno == ENOENT)
-			FATAL("failed to stat file descriptor %d", data_fd);
-
-		file_size = st.st_size;
-	}
 
 	struct chunk_iterator_ctx ctx;
 	int status = chunk_iterator_init_ctx(&ctx, in_fd);
@@ -233,108 +296,96 @@ static int embed_data(int in_fd, int out_fd, int data_fd, const void *data,
 	else if(status > 0)
 		DIE("input file is not a PNG (does not conform to RFC 2083)");
 
+	// write PNG header signature to output file
 	if (recoverable_write(out_fd, PNG_SIG, SIGNATURE_LENGTH) != SIGNATURE_LENGTH)
 		FATAL("failed to write PNG file signature to output file");
 
-	int64_t unix_time = time(NULL);
-	unsigned char temporary_buffer[BUFF_LEN];
-	off_t embedded_chunk_offset = 0;
-
 	int has_next_chunk, IEND_found = 0;
-	while ((has_next_chunk = chunk_iterator_has_next(&ctx)) > 0) {
+	while ((has_next_chunk = chunk_iterator_has_next(&ctx)) != 0) {
+		if (has_next_chunk < 0)
+			FATAL("unexpected error while parsing input file");
+
 		if (chunk_iterator_next(&ctx) != 0)
 			FATAL("unexpected error while parsing input file");
 
-		struct png_chunk_detail chunk = ctx.current_chunk;
-
 		// if the current chunk is the IEND chunk, then write our chunk
-		if (!memcmp(chunk.chunk_type, IEND_CHUNK_TYPE, CHUNK_TYPE_LENGTH)) {
+		if (!memcmp(ctx.current_chunk.chunk_type, IEND_CHUNK_TYPE, CHUNK_TYPE_LENGTH)) {
 			if (IEND_found)
 				DIE("non-compliant input file with IEND chunk defined twice (does not conform to RFC 2083)");
-
-			embedded_chunk_offset = lseek(out_fd, 0, SEEK_CUR);
-			if (embedded_chunk_offset < 0)
-				FATAL("failed to read the file position in the output file");
-			result->file_offset = embedded_chunk_offset;
-
 			IEND_found = 1;
-			u_int32_t crc = 0;
 
-			// write data size
-			unsigned long header_len = sizeof(int64_t) + sizeof(unsigned char);
-			result->data_length = file_size + header_len;
-			u_int32_t len_net_order = htonl(result->data_length);
-			if (recoverable_write(out_fd, &len_net_order, sizeof(u_int32_t)) != sizeof(u_int32_t))
-				FATAL("failed to write data chunk length to output file");
+			struct strbuf deflated_data;
+			strbuf_init(&deflated_data);
 
-			// write chunk type
-			char chunk_type[CHUNK_TYPE_LENGTH] = {'s', 't', 'E', 'G'};
-			memcpy(result->chunk_type, chunk_type, CHUNK_TYPE_LENGTH);
-			crc = write_and_update_crc(out_fd, chunk_type, sizeof(char) * CHUNK_TYPE_LENGTH, crc);
+			// set up zlib for deflate
+			int ret, flush;
+			struct z_stream_s strm;
 
-			// write header (time and token)
-			unsigned char token = DATA_TOKEN;
-			result->unix_time = unix_time;
-			crc = write_and_update_crc(out_fd, &unix_time, sizeof(u_int64_t), crc);
-			crc = write_and_update_crc(out_fd, &token, sizeof(unsigned char), crc);
+			/* allocate deflate state */
+			strm.zalloc = Z_NULL;
+			strm.zfree = Z_NULL;
+			strm.opaque = Z_NULL;
+			ret = deflateInit(&strm, compression_level);
+			if (ret != Z_OK)
+				FATAL("failed to initialize zlib for DEFLATE compression");
 
-			if (data) {
-				crc = write_and_update_crc(out_fd, data, message_len, crc);
-			} else {
-				// write chunk data and compute CRC
-				char buffer[BUFF_LEN];
-				size_t total_bytes_read = 0;
-				ssize_t bytes_read = 0;
-				while ((bytes_read = recoverable_read(data_fd, buffer, BUFF_LEN)) > 0) {
-					total_bytes_read += bytes_read;
-					crc = write_and_update_crc(out_fd, buffer, bytes_read, crc);
+			unsigned char in[DEFLATE_CHUNK_DATA_LENGTH];
+			unsigned char out[DEFLATE_CHUNK_DATA_LENGTH];
+			do {
+				if (data) {
+					size_t len = (data->len >= DEFLATE_CHUNK_DATA_LENGTH)
+							? DEFLATE_CHUNK_DATA_LENGTH : data->len;
+					memcpy(in, data->buff, len);
+					strbuf_remove(data, 0, len);
+
+					strm.avail_in = len;
+				} else {
+					ssize_t bytes_read = recoverable_read(data_fd, in, DEFLATE_CHUNK_DATA_LENGTH);
+					if (bytes_read < 0)
+						FATAL("failed to read from data input file");
+
+					strm.avail_in = bytes_read;
 				}
 
-				if (bytes_read < 0)
-					FATAL("failed to read from fd %d", data_fd);
-				if (total_bytes_read != file_size)
-					FATAL("stat file size mismatch");
+				flush = (strm.avail_in < DEFLATE_CHUNK_DATA_LENGTH) ? Z_FINISH : Z_NO_FLUSH;
+				strm.next_in = in;
+				result->bytes_in += strm.avail_in;
+
+				do {
+					strm.avail_out = DEFLATE_CHUNK_DATA_LENGTH;
+					strm.next_out = out;
+					ret = deflate(&strm, flush);
+					if(ret == Z_STREAM_ERROR)
+						FATAL("unexpected error while running zlib DEFLATE");
+
+					strbuf_attach_bytes(&deflated_data, out, DEFLATE_CHUNK_DATA_LENGTH - strm.avail_out);
+				} while (strm.avail_out == 0);
+
+				while (deflated_data.len >= DEFLATE_CHUNK_DATA_LENGTH) {
+					write_chunk_to_file_from_buffer(out_fd, deflated_data.buff, DEFLATE_CHUNK_DATA_LENGTH);
+					strbuf_remove(&deflated_data, 0, DEFLATE_CHUNK_DATA_LENGTH);
+					result->bytes_out += DEFLATE_CHUNK_DATA_LENGTH;
+					result->chunks_written++;
+				}
+			} while (flush != Z_FINISH);
+
+			while (deflated_data.len > 0) {
+				size_t data_write_len = (deflated_data.len >= DEFLATE_CHUNK_DATA_LENGTH)
+						? DEFLATE_CHUNK_DATA_LENGTH : deflated_data.len;
+				write_chunk_to_file_from_buffer(out_fd, deflated_data.buff, data_write_len);
+				strbuf_remove(&deflated_data, 0, data_write_len);
+				result->bytes_out += data_write_len;
+				result->chunks_written++;
 			}
 
-			// write CRC
-			result->crc = crc;
-			u_int32_t crc_net_order = htonl(crc);
-			if (recoverable_write(out_fd, &crc_net_order, sizeof(u_int32_t)) != sizeof(u_int32_t))
-				FATAL("failed to write CRC field to output file");
+			strbuf_release(&deflated_data);
+			deflateEnd(&strm);
 		}
 
-		// write the chunk data length to output file
-		u_int32_t data_len_net_order = htonl(chunk.data_length);
-		if (recoverable_write(out_fd, &data_len_net_order, sizeof(u_int32_t)) != sizeof(u_int32_t))
-			FATAL("failed to write data length field to output file");
-
-		// write the chunk type to output file
-		u_int32_t chunk_crc = 0;
-		chunk_crc = write_and_update_crc(out_fd, chunk.chunk_type, sizeof(char) * CHUNK_TYPE_LENGTH, chunk_crc);
-
-		// write the chunk data to output file
-		while (1) {
-			ssize_t bytes_read = chunk_iterator_read_data(&ctx, temporary_buffer, BUFF_LEN);
-			if (bytes_read < 0)
-				FATAL("unexpected error while parsing input file");
-			if (bytes_read == 0)
-				break;
-
-			chunk_crc = write_and_update_crc(out_fd, temporary_buffer, bytes_read, chunk_crc);
-		}
-
-		if (chunk_crc != chunk.chunk_crc)
-			WARN("%.*s chunk at file offset %d has invalid CRC -- file may be corrupted",
-					CHUNK_TYPE_LENGTH, chunk.chunk_type, ctx.chunk_file_offset);
-
-		// write the chunk CRC to output file
-		u_int32_t crc_net_order = htonl(chunk.chunk_crc);
-		if (recoverable_write(out_fd, &crc_net_order, sizeof(u_int32_t)) != sizeof(u_int32_t))
-			FATAL("failed to write CRC field to output file");
+		write_chunk_to_file_from_ctx(out_fd, &ctx);
 	}
 
-	if (has_next_chunk < 0)
-		FATAL("unexpected error while parsing input file");
+	result->compression_ratio = result->bytes_out == 0 ? 0.0 : (float)result->bytes_out / (float)result->bytes_in;
 
 	if (!IEND_found)
 		DIE("non-compliant input file no IEND chunk defined (does not conform to RFC 2083)");
@@ -438,13 +489,9 @@ static void print_summary(const char *original_file_path,
 	printf("%-3s ", "out");
 	print_file_summary(new_file_path, (int)(max_filename_len - filename_to_len + 1));
 
-	// print embedded chunk details
-	struct tm *timeinfo = localtime((time_t *) &result->unix_time);
-
-	printf("\nembedded chunk details:\n");
-	printf("chunk file offset: %llu\n", result->file_offset);
-	printf("chunk data length: %u (network byte order %#x)\n", result->data_length, ntohl(result->data_length));
-	printf("chunk type: %.*s\n", CHUNK_TYPE_LENGTH, result->chunk_type);
-	printf("timestamp: %s", asctime(timeinfo));
-	printf("cyclic redundancy check: %u (network byte order %#x)\n", result->crc, ntohl(result->crc));
+	printf("\nsummary:\n");
+	printf("compression factor: %.2f (%lu in, %lu out)\n",
+			result->compression_ratio, result->bytes_in, result->bytes_out);
+	printf("chunks embedded in file: %d\n",
+			result->chunks_written);
 }

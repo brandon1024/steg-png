@@ -84,6 +84,14 @@ void strbuf_attach_bytes(struct strbuf *buff, const void *mem, size_t buffer_len
 int strbuf_trim(struct strbuf *buff);
 
 /**
+ * Remove a given amount of data from a given position within the buffer, without
+ * resizing the buffer.
+ *
+ * Simply returns if pos is beyond the length of the buffer.
+ */
+void strbuf_remove(struct strbuf *sb, size_t pos, size_t len);
+
+/**
  * Detach the string from the strbuf. The strbuf is released and must be
  * reinitialized for reuse.
  * */

@@ -149,6 +149,27 @@ int strbuf_trim(struct strbuf *buff)
 	return chars_trimmed;
 }
 
+void strbuf_remove(struct strbuf *sb, size_t pos, size_t len)
+{
+	if (pos >= sb->len)
+		return;
+	if (!len)
+		return;
+
+	if ((sb->buff + pos + len) > (sb->buff + sb->len)) {
+		// if removing all bytes after pos, just null buff[pos] and set length
+		sb->len = pos;
+	} else {
+		// if removing bytes somewhere within buff, truncate bytes with memmove
+		// and update length
+		size_t partition_len = sb->buff + sb->len - (sb->buff + pos + len);
+		memmove(sb->buff + pos, sb->buff + pos + len, partition_len);
+		sb->len = pos + partition_len;
+	}
+
+	sb->buff[sb->len] = 0;
+}
+
 char *strbuf_detach(struct strbuf *buff)
 {
 	char *detached_buffer = buff->buff;

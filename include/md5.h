@@ -32,28 +32,27 @@
 #define MD5_DIGEST_SIZE 16
 #define MD5_BLOCK_SIZE 64
 
-#ifndef __GNUC_PREREQ
-# if defined __GNUC__ && defined __GNUC_MINOR__
-#  define __GNUC_PREREQ(maj, min)                                       \
-  ((__GNUC__ << 16) + __GNUC_MINOR__ >= ((maj) << 16) + (min))
-# else
-#  define __GNUC_PREREQ(maj, min) 0
+# ifndef __GNUC_PREREQ
+#	if defined __GNUC__ && defined __GNUC_MINOR__
+#		define __GNUC_PREREQ(maj, min)((__GNUC__ << 16) + __GNUC_MINOR__ >= ((maj) << 16) + (min))
+#	else
+#		define __GNUC_PREREQ(maj, min) 0
+#	endif
 # endif
-#endif
 
-#ifndef _LIBC
-# define __md5_buffer md5_buffer
-# define __md5_finish_ctx md5_finish_ctx
-# define __md5_init_ctx md5_init_ctx
-# define __md5_process_block md5_process_block
-# define __md5_process_bytes md5_process_bytes
-# define __md5_read_ctx md5_read_ctx
-# define __md5_stream md5_stream
-#endif
+# ifndef _LIBC
+#	define __md5_buffer md5_buffer
+#	define __md5_finish_ctx md5_finish_ctx
+#	define __md5_init_ctx md5_init_ctx
+#	define __md5_process_block md5_process_block
+#	define __md5_process_bytes md5_process_bytes
+#	define __md5_read_ctx md5_read_ctx
+#	define __md5_stream md5_stream
+# endif
 
 # if HAVE_OPENSSL_MD5
-#  define GL_OPENSSL_NAME 5
-#  include "gl_openssl.h"
+#	define GL_OPENSSL_NAME 5
+#	include "gl_openssl.h"
 # else
 /* Structure to save state of computation between the single steps.  */
 struct md5_ctx
