@@ -55,7 +55,7 @@ int cmd_embed(int argc, char *argv[])
 			OPT_END()
 	};
 
-	argc = parse_options(argc, argv, main_cmd_options, 0, 1);
+	argc = parse_options(argc, argv, main_cmd_options, 0, 0);
 	if (help) {
 		show_usage_with_options(main_cmd_usage, main_cmd_options, 0, NULL);
 		return 0;
