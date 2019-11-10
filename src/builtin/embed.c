@@ -7,7 +7,6 @@
 #include <arpa/inet.h>
 #include <time.h>
 
-#include "crc.h"
 #include "md5.h"
 #include "strbuf.h"
 #include "parse-options.h"
@@ -203,7 +202,7 @@ static inline u_int32_t write_and_update_crc(int fd, const void *data, size_t le
 	if (recoverable_write(fd, data, length) != length)
 		FATAL("failed to write new chunk to output file descriptor %d", fd);
 
-	return crc32_update(crc, data, length);
+	return crc32_z(crc, data, length);
 }
 
 /**

@@ -4,7 +4,6 @@
 #include <arpa/inet.h>
 
 #include "png-chunk-processor.h"
-#include "crc.h"
 #include "utils.h"
 
 unsigned char PNG_SIG[] = {
