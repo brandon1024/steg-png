@@ -5,8 +5,11 @@
 #include <unistd.h>
 #include <errno.h>
 #include <sys/stat.h>
+#include <fcntl.h>
 
 #include "utils.h"
+
+#define BUFF_LEN 1024
 
 static void print_message(FILE *output_stream, const char *prefix,
 		const char *fmt, va_list varargs);
@@ -107,6 +110,38 @@ ssize_t recoverable_write(int fd, const void *buf, size_t len)
 		}
 
 		break;
+	}
+
+	return bytes_written;
+}
+
+ssize_t copy_file(const char *dest, const char *src, int mode)
+{
+	int in_fd, out_fd;
+	if (!(in_fd = open(src, O_RDONLY)))
+		return -1;
+	if (!(out_fd = open(dest, O_WRONLY | O_CREAT | O_EXCL, mode)))
+		return -1;
+
+	ssize_t bytes_written = copy_file_fd(out_fd, in_fd);
+	close(in_fd);
+	close(out_fd);
+
+	return bytes_written;
+}
+
+ssize_t copy_file_fd(int dest_fd, int src_fd)
+{
+	char buffer[BUFF_LEN];
+	ssize_t bytes_written = 0;
+
+	ssize_t bytes_read;
+	while ((bytes_read = recoverable_read(src_fd, buffer, BUFF_LEN)) > 0) {
+		// if write failed, return bytes_written
+		if (recoverable_write(dest_fd, buffer, bytes_read) != bytes_read)
+			return bytes_written;
+
+		bytes_written += bytes_read;
 	}
 
 	return bytes_written;

@@ -75,4 +75,34 @@ ssize_t recoverable_read(int fd, void *buf, size_t len);
  * */
 ssize_t recoverable_write(int fd, const void *buf, size_t len);
 
+/**
+ * Copy a file from the src location to the dest location. `dest` and `src` must
+ * be null-terminated strings.
+ *
+ * The new file will assume the given mode.
+ *
+ * If the src file cannot be opened for reading, -1 is returned.
+ * If the destination file cannot be opened for writing, -1 is returned.
+ *
+ * If reading/writing could not be completed due to an unexpected error, returns
+ * the total number of bytes written so far.
+ *
+ * If successful, returns the total number of bytes written.
+ * */
+ssize_t copy_file(const char *dest, const char *src, int mode);
+
+/**
+ * Copy a file from the src location to the dest location. `dest_fd` and `src_fd`
+ * must be open file descriptors.
+ *
+ * If the src file cannot be opened for reading, -1 is returned.
+ * If the destination file cannot be opened for writing, -1 is returned.
+ *
+ * If reading/writing could not be completed due to an unexpected error, returns
+ * the total number of bytes written so far.
+ *
+ * If successful, returns the total number of bytes written.
+ * */
+ssize_t copy_file_fd(int dest_fd, int src_fd);
+
 #endif //STEG_PNG_UTILS_H
