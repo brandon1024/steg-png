@@ -16,6 +16,7 @@
 
 #define BUFF_LEN 1024
 #define DEFLATE_CHUNK_DATA_LENGTH 8192
+#define DEFLATE_STREAM_BUFFER_SIZE 16384
 
 struct chunk_summary {
 	size_t bytes_in;
@@ -23,6 +24,8 @@ struct chunk_summary {
 	double compression_ratio;
 	int chunks_written;
 };
+
+static int compression_level = Z_DEFAULT_COMPRESSION;
 
 static int embed(const char *, const char *, const char *, const char *, int,
 		struct chunk_summary *);
@@ -35,16 +38,15 @@ int cmd_embed(int argc, char *argv[])
 	const char *file_to_embed = NULL;
 	int help = 0;
 	int quiet = 0;
-	int compression_level = Z_DEFAULT_COMPRESSION;
 
-	const struct usage_string main_cmd_usage[] = {
+	const struct usage_string embed_cmd_usage[] = {
 			USAGE("steg-png embed [options] (-m | --message <message>) <file>"),
 			USAGE("steg-png embed [options] (-f | --file <file>) <file>"),
 			USAGE("steg-png embed (-h | --help)"),
 			USAGE_END()
 	};
 
-	const struct command_option main_cmd_options[] = {
+	const struct command_option embed_cmd_options[] = {
 			OPT_STRING('m', "message", "message", "specify the message to embed in the png image", &message),
 			OPT_STRING('f', "file", "file", "specify a file to embed in the png image", &file_to_embed),
 			OPT_STRING('o', "output", "file", "output to a specific file", &output_file),
@@ -54,24 +56,24 @@ int cmd_embed(int argc, char *argv[])
 			OPT_END()
 	};
 
-	argc = parse_options(argc, argv, main_cmd_options, 0, 0);
+	argc = parse_options(argc, argv, embed_cmd_options, 0, 0);
 	if (help) {
-		show_usage_with_options(main_cmd_usage, main_cmd_options, 0, NULL);
+		show_usage_with_options(embed_cmd_usage, embed_cmd_options, 0, NULL);
 		return 0;
 	}
 
 	if (argc != 1) {
-		show_usage_with_options(main_cmd_usage, main_cmd_options, 1, "too many options");
+		show_usage_with_options(embed_cmd_usage, embed_cmd_options, 1, "too many options");
 		return 1;
 	}
 
 	if (file_to_embed && message) {
-		show_usage_with_options(main_cmd_usage, main_cmd_options, 1, "cannot mix --file and --message options");
+		show_usage_with_options(embed_cmd_usage, embed_cmd_options, 1, "cannot mix --file and --message options");
 		return 1;
 	}
 
 	if (compression_level != Z_DEFAULT_COMPRESSION && (compression_level > 9 || compression_level < 0)) {
-		show_usage_with_options(main_cmd_usage, main_cmd_options, 1, "invalid compression level %d", compression_level);
+		show_usage_with_options(embed_cmd_usage, embed_cmd_options, 1, "invalid compression level %d", compression_level);
 		return 1;
 	}
 
@@ -178,15 +180,11 @@ static int embed(const char *input_file, const char *output_file,
 	if (out_fd < 0)
 		FATAL(FILE_OPEN_FAILED, output_file);
 
-	// copy the temporary file to it's new home, with the same file mode as the input file
-	ssize_t bytes_read;
-	char buffer[BUFF_LEN];
-	while ((bytes_read = recoverable_read(tmp_fd, buffer, BUFF_LEN)) > 0) {
-		if (recoverable_write(out_fd, buffer, bytes_read) != bytes_read)
-			FATAL("failed to copy temporary file to output '%s'", output_file);
-	}
-	if (bytes_read < 0)
-		FATAL("failed to copy temporary file to output '%s'", output_file);
+	fstat(tmp_fd, &st);
+	ssize_t file_size = st.st_size;
+
+	if (copy_file_fd(out_fd, tmp_fd) != file_size)
+		FATAL("failed to write temporary file to destination %s", output_file);
 
 	close(tmp_fd);
 	close(out_fd);
@@ -245,7 +243,7 @@ void write_chunk_to_file_from_ctx(int dest_fd, struct chunk_iterator_ctx *ctx)
 		FATAL("failed to write CRC field to output file");
 }
 
-void write_chunk_to_file_from_buffer(int dest_fd, void *buffer, size_t length)
+void write_steg_chunk_to_file_from_buffer(int dest_fd, void *buffer, size_t length)
 {
 	u_int32_t crc = 0;
 
@@ -299,6 +297,26 @@ static int embed_data(int in_fd, int out_fd, int data_fd, struct strbuf *data,
 	if (recoverable_write(out_fd, PNG_SIG, SIGNATURE_LENGTH) != SIGNATURE_LENGTH)
 		FATAL("failed to write PNG file signature to output file");
 
+	// allocate buffers for deflate input/output
+	unsigned char *input_buffer = malloc(sizeof(unsigned char) * DEFLATE_STREAM_BUFFER_SIZE);
+	if (!input_buffer)
+		FATAL(MEM_ALLOC_FAILED);
+
+	unsigned char *output_buffer = malloc(sizeof(unsigned char) * DEFLATE_STREAM_BUFFER_SIZE);
+	if (!output_buffer)
+		FATAL(MEM_ALLOC_FAILED);
+
+	// set up zlib for deflate
+	struct z_stream_s strm;
+	strm.zalloc = Z_NULL;
+	strm.zfree = Z_NULL;
+	strm.opaque = Z_NULL;
+
+	int ret, flush;
+	ret = deflateInit(&strm, compression_level);
+	if (ret != Z_OK)
+		FATAL("failed to initialize zlib for DEFLATE: %s", zError(ret));
+
 	int has_next_chunk, IEND_found = 0;
 	while ((has_next_chunk = chunk_iterator_has_next(&ctx)) != 0) {
 		if (has_next_chunk < 0)
@@ -313,76 +331,95 @@ static int embed_data(int in_fd, int out_fd, int data_fd, struct strbuf *data,
 				DIE("non-compliant input file with IEND chunk defined twice (does not conform to RFC 2083)");
 			IEND_found = 1;
 
-			struct strbuf deflated_data;
-			strbuf_init(&deflated_data);
+			// deflate input file/buffer
+			strm.avail_out = DEFLATE_STREAM_BUFFER_SIZE;
+			strm.next_out = output_buffer;
 
-			// set up zlib for deflate
-			int ret, flush;
-			struct z_stream_s strm;
-
-			/* allocate deflate state */
-			strm.zalloc = Z_NULL;
-			strm.zfree = Z_NULL;
-			strm.opaque = Z_NULL;
-			ret = deflateInit(&strm, compression_level);
-			if (ret != Z_OK)
-				FATAL("failed to initialize zlib for DEFLATE compression");
-
-			unsigned char in[DEFLATE_CHUNK_DATA_LENGTH];
-			unsigned char out[DEFLATE_CHUNK_DATA_LENGTH];
 			do {
+				flush = Z_NO_FLUSH;
+
+				/*
+				 * Copy the input data (from given strbuf or file) into data
+				 * buffer for zlib deflate.
+				 * */
 				if (data) {
-					size_t len = (data->len >= DEFLATE_CHUNK_DATA_LENGTH)
-							? DEFLATE_CHUNK_DATA_LENGTH : data->len;
-					memcpy(in, data->buff, len);
+					// if only a portion of chunk is remaining, use length of buffer
+					size_t len = DEFLATE_STREAM_BUFFER_SIZE;
+					if (data->len < DEFLATE_STREAM_BUFFER_SIZE) {
+						len = data->len;
+						flush = Z_FINISH;
+					}
+
+					// move from data buffer to input buffer
+					memcpy(input_buffer, data->buff, len);
 					strbuf_remove(data, 0, len);
 
 					strm.avail_in = len;
 				} else {
-					ssize_t bytes_read = recoverable_read(data_fd, in, DEFLATE_CHUNK_DATA_LENGTH);
+					ssize_t bytes_read = recoverable_read(data_fd, input_buffer, DEFLATE_STREAM_BUFFER_SIZE);
 					if (bytes_read < 0)
 						FATAL("failed to read from data input file");
 
 					strm.avail_in = bytes_read;
+					if (bytes_read < DEFLATE_STREAM_BUFFER_SIZE)
+						flush = Z_FINISH;
 				}
 
-				flush = (strm.avail_in < DEFLATE_CHUNK_DATA_LENGTH) ? Z_FINISH : Z_NO_FLUSH;
-				strm.next_in = in;
+				strm.next_in = input_buffer;
 				result->bytes_in += strm.avail_in;
 
+				/*
+				 * Run zlib deflate on input data while the output buffer is not full.
+				 * If the output buffer is full, or we reached the end of the input data,
+				 * the output buffer is written as stEG chunks to the output file in chunks
+				 * of 8192 bytes in length.
+				 * */
+				unsigned pending = 0;
 				do {
-					strm.avail_out = DEFLATE_CHUNK_DATA_LENGTH;
-					strm.next_out = out;
 					ret = deflate(&strm, flush);
-					if(ret == Z_STREAM_ERROR)
-						FATAL("unexpected error while running zlib DEFLATE");
+					if (ret == Z_STREAM_ERROR)
+						FATAL("zlib DEFLATE failed with unexpected error: %s", zError(ret));
 
-					strbuf_attach_bytes(&deflated_data, out, DEFLATE_CHUNK_DATA_LENGTH - strm.avail_out);
-				} while (strm.avail_out == 0);
+					// if we filled the output buffer or reached end of input data, write chunks
+					if (strm.avail_out == 0 || flush == Z_FINISH) {
+						size_t data_to_write = DEFLATE_STREAM_BUFFER_SIZE - strm.avail_out;
 
-				while (deflated_data.len >= DEFLATE_CHUNK_DATA_LENGTH) {
-					write_chunk_to_file_from_buffer(out_fd, deflated_data.buff, DEFLATE_CHUNK_DATA_LENGTH);
-					strbuf_remove(&deflated_data, 0, DEFLATE_CHUNK_DATA_LENGTH);
-					result->bytes_out += DEFLATE_CHUNK_DATA_LENGTH;
-					result->chunks_written++;
-				}
+						do {
+							size_t chunk_size = data_to_write > DEFLATE_CHUNK_DATA_LENGTH ? DEFLATE_CHUNK_DATA_LENGTH : data_to_write;
+
+							write_steg_chunk_to_file_from_buffer(out_fd, output_buffer, chunk_size);
+							result->bytes_out += chunk_size;
+							result->chunks_written++;
+
+							data_to_write -= chunk_size;
+
+							// shift data in output buffer to beginning of buffer
+							memmove(output_buffer, output_buffer + chunk_size, DEFLATE_STREAM_BUFFER_SIZE - chunk_size);
+
+							// update zlib stream state
+							strm.avail_out = DEFLATE_STREAM_BUFFER_SIZE - data_to_write;
+							strm.next_out = output_buffer + data_to_write;
+						} while (data_to_write >= DEFLATE_CHUNK_DATA_LENGTH || (data_to_write > 0 && flush == Z_FINISH));
+					}
+
+					/*
+					 * Even though we may have fully consumed the output buffer, zlib may still have some pending
+					 * data that it is waiting to write to the output buffer. If so (determined by deflatePending),
+					 * run deflate again to write it to the output buffer.
+					 * */
+					ret = deflatePending(&strm, &pending, Z_NULL);
+					if (ret != Z_OK)
+						FATAL("zlib DEFLATE failed with unexpected error: %s", zError(ret));
+				} while (strm.avail_out == 0 || pending);
 			} while (flush != Z_FINISH);
-
-			while (deflated_data.len > 0) {
-				size_t data_write_len = (deflated_data.len >= DEFLATE_CHUNK_DATA_LENGTH)
-						? DEFLATE_CHUNK_DATA_LENGTH : deflated_data.len;
-				write_chunk_to_file_from_buffer(out_fd, deflated_data.buff, data_write_len);
-				strbuf_remove(&deflated_data, 0, data_write_len);
-				result->bytes_out += data_write_len;
-				result->chunks_written++;
-			}
-
-			strbuf_release(&deflated_data);
-			deflateEnd(&strm);
 		}
 
 		write_chunk_to_file_from_ctx(out_fd, &ctx);
 	}
+
+	(void)deflateEnd(&strm);
+	free(input_buffer);
+	free(output_buffer);
 
 	result->compression_ratio = result->bytes_out == 0 ? 0.0 : (float)result->bytes_out / (float)result->bytes_in;
 
