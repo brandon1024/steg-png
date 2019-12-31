@@ -3,6 +3,8 @@
 
 #include <stdlib.h>
 
+#include "str-array.h"
+
 /**
  * strbuf api
  *
@@ -98,8 +100,27 @@ void strbuf_remove(struct strbuf *sb, size_t pos, size_t len);
 char *strbuf_detach(struct strbuf *buff);
 
 /**
+ * Split a strbuf into multiple strings on a given delimiter.
+ *
+ * The split strings are pushed into the given str_array. The given strbuf is not
+ * modified.
+ *
+ * If the delimiter is NULL or the empty string, the entire strbuf is inserted into
+ * the str_array. The delimiter must be a null-terminated string.
+ *
+ * Returns the number of entries added to str_array, or -1 if an error
+ * occurred.
+ * */
+int strbuf_split(const struct strbuf *buff, const char *delim,
+		struct str_array *result);
+
+/**
  * Clear all content stored under the given strbuf. The strbuf is not resized,
  * and can be reused for other purposes.
+ *
+ * This function is particularly useful for reusing memory that was previously
+ * allocated for another purpose to avoid the overhead associated with allocating
+ * and freeing memory.
  * */
 void strbuf_clear(struct strbuf *buff);
 

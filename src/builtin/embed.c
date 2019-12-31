@@ -6,6 +6,7 @@
 #include <sys/stat.h>
 #include <arpa/inet.h>
 #include <time.h>
+#include <limits.h>
 
 #include "md5.h"
 #include "strbuf.h"
@@ -22,12 +23,12 @@ struct chunk_summary {
 	size_t bytes_in;
 	size_t bytes_out;
 	double compression_ratio;
-	int chunks_written;
+	unsigned chunks_written;
 };
 
 static int compression_level = Z_DEFAULT_COMPRESSION;
 
-static int embed(const char *, const char *, const char *, const char *, int,
+static int embed(const char *, const char *, const char *, const char *,
 		struct chunk_summary *);
 static void print_summary(const char *, const char *, struct chunk_summary *);
 
@@ -56,14 +57,19 @@ int cmd_embed(int argc, char *argv[])
 			OPT_END()
 	};
 
-	argc = parse_options(argc, argv, embed_cmd_options, 0, 0);
+	argc = parse_options(argc, argv, embed_cmd_options, 0, 1);
 	if (help) {
 		show_usage_with_options(embed_cmd_usage, embed_cmd_options, 0, NULL);
 		return 0;
 	}
 
-	if (argc != 1) {
-		show_usage_with_options(embed_cmd_usage, embed_cmd_options, 1, "too many options");
+	if (argc > 1) {
+		show_usage_with_options(embed_cmd_usage, embed_cmd_options, 1, "unknown option '%s'", argv[0]);
+		return 1;
+	}
+
+	if (argc < 1) {
+		show_usage_with_options(embed_cmd_usage, embed_cmd_options, 1, "nothing to do");
 		return 1;
 	}
 
@@ -76,6 +82,11 @@ int cmd_embed(int argc, char *argv[])
 		show_usage_with_options(embed_cmd_usage, embed_cmd_options, 1, "invalid compression level %d", compression_level);
 		return 1;
 	}
+
+	if (compression_level == 0)
+		WARN("using a compression level of zero is discouraged, since the embedded message\n"
+			"or file will not be sufficiently obfuscated. Consider increasing the compression level\n"
+			"or encrypting your input message or file.");
 
 	struct strbuf output_file_path;
 	int ret = 0;
@@ -95,7 +106,7 @@ int cmd_embed(int argc, char *argv[])
 			.compression_ratio = 0
 	};
 
-	ret = embed(argv[0], output_file_path.buff, file_to_embed, message, compression_level, &result);
+	ret = embed(argv[0], output_file_path.buff, file_to_embed, message, &result);
 
 	if (!quiet)
 		print_summary(argv[0], output_file_path.buff, &result);
@@ -105,7 +116,7 @@ int cmd_embed(int argc, char *argv[])
 	return ret;
 }
 
-static int embed_data(int, int, int, struct strbuf *, int, struct chunk_summary *);
+static int embed_data(int, int, int, struct strbuf *, struct chunk_summary *);
 
 /**
  * Embed a file or message into a PNG image with the file path `input_file`, and
@@ -123,8 +134,7 @@ static int embed_data(int, int, int, struct strbuf *, int, struct chunk_summary 
  * its final location if successful.
  * */
 static int embed(const char *input_file, const char *output_file,
-		const char *file_to_embed, const char *message, int compression_level,
-		struct chunk_summary *result)
+		const char *file_to_embed, const char *message, struct chunk_summary *result)
 {
 	// stat and open descriptor to input file
 	struct stat st;
@@ -133,7 +143,7 @@ static int embed(const char *input_file, const char *output_file,
 
 	int in_fd = open(input_file, O_RDONLY);
 	if (in_fd < 0)
-		FATAL(FILE_OPEN_FAILED, input_file);
+		DIE(FILE_OPEN_FAILED, input_file);
 
 	// create and unlink a temporary file
 	char tmp_file_name_template[] = "/tmp/steg-png_XXXXXX";
@@ -147,9 +157,9 @@ static int embed(const char *input_file, const char *output_file,
 		// open descriptor to file that will be embedded
 		int file_to_embed_fd = open(file_to_embed, O_RDONLY);
 		if (file_to_embed_fd < 0)
-			FATAL(FILE_OPEN_FAILED, file_to_embed);
+			DIE(FILE_OPEN_FAILED, file_to_embed);
 
-		embed_data(in_fd, tmp_fd, file_to_embed_fd, NULL, compression_level, result);
+		embed_data(in_fd, tmp_fd, file_to_embed_fd, NULL, result);
 		close(file_to_embed_fd);
 	} else {
 		// if no message was given, take from stdin
@@ -167,7 +177,7 @@ static int embed(const char *input_file, const char *output_file,
 			strbuf_attach_str(&message_buf, message);
 		}
 
-		embed_data(in_fd, tmp_fd, -1, &message_buf, compression_level, result);
+		embed_data(in_fd, tmp_fd, -1, &message_buf, result);
 		strbuf_release(&message_buf);
 	}
 
@@ -178,7 +188,7 @@ static int embed(const char *input_file, const char *output_file,
 
 	int out_fd = open(output_file, O_WRONLY | O_CREAT | O_TRUNC, st.st_mode);
 	if (out_fd < 0)
-		FATAL(FILE_OPEN_FAILED, output_file);
+		DIE(FILE_OPEN_FAILED, output_file);
 
 	fstat(tmp_fd, &st);
 	ssize_t file_size = st.st_size;
@@ -266,6 +276,19 @@ void write_steg_chunk_to_file_from_buffer(int dest_fd, void *buffer, size_t leng
 }
 
 /**
+ * Compute the sparcity constant used to determine how sparsely the embedded chunks will be
+ * distributed in the file.
+ *
+ * A value of 0 indicates that embedded chunks should not be sparse, (i.e. localized).
+ * */
+static inline unsigned int compute_sparcity(off_t source_file_len, off_t data_len)
+{
+	return (unsigned int)((source_file_len / data_len) % UINT_MAX);
+}
+
+static size_t single_pass_deflate(struct z_stream_s *, unsigned char *, int, int);
+
+/**
  * Embed arbitrary data from a file or string to a PNG file.
  *
  * in_fd must be an open file descriptor to the source PNG file.
@@ -279,7 +302,7 @@ void write_steg_chunk_to_file_from_buffer(int dest_fd, void *buffer, size_t leng
  * Returns the number of chunks created.
  * */
 static int embed_data(int in_fd, int out_fd, int data_fd, struct strbuf *data,
-		int compression_level, struct chunk_summary *result)
+		struct chunk_summary *result)
 {
 	if (data && data_fd != -1)
 		BUG("either data or data_fd must be defined, not both");
@@ -289,7 +312,7 @@ static int embed_data(int in_fd, int out_fd, int data_fd, struct strbuf *data,
 	struct chunk_iterator_ctx ctx;
 	int status = chunk_iterator_init_ctx(&ctx, in_fd);
 	if (status < 0)
-		FATAL("failed to read from input file");
+		FATAL("failed to read from file descriptor");
 	else if(status > 0)
 		DIE("input file is not a PNG (does not conform to RFC 2083)");
 
@@ -312,106 +335,95 @@ static int embed_data(int in_fd, int out_fd, int data_fd, struct strbuf *data,
 	strm.zfree = Z_NULL;
 	strm.opaque = Z_NULL;
 
-	int ret, flush;
+	int ret, flush = Z_NO_FLUSH;
 	ret = deflateInit(&strm, compression_level);
 	if (ret != Z_OK)
 		FATAL("failed to initialize zlib for DEFLATE: %s", zError(ret));
 
+	struct stat st;
+	if (fstat(in_fd, &st) && errno == ENOENT)
+		FATAL("failed to stat tmp file with descriptor %s'", in_fd);
+
+	// compute the sparcity
+	unsigned int sparcity;
+	if (data) {
+		sparcity = compute_sparcity(st.st_size, data->len);
+	} else {
+		struct stat data_st;
+		if (fstat(data_fd, &data_st) && errno == ENOENT)
+			FATAL("failed to stat tmp file with descriptor %s'", in_fd);
+
+		sparcity = compute_sparcity(st.st_size, data_st.st_size);
+	}
+
+	// seed PRNG
+	struct timespec ts;
+	if (timespec_get(&ts, TIME_UTC) == 0)
+		FATAL("unable to seed PRNG; timespec_get with base TIME_UTC failed unexpectedly");
+	srandom(ts.tv_nsec ^ ts.tv_sec);
+
 	int has_next_chunk, IEND_found = 0;
 	while ((has_next_chunk = chunk_iterator_has_next(&ctx)) != 0) {
 		if (has_next_chunk < 0)
-			FATAL("unexpected error while parsing input file");
+			DIE("unable to parse input file: file does not appear to represent a valid PNG file, or may be corrupted.");
 
 		if (chunk_iterator_next(&ctx) != 0)
-			FATAL("unexpected error while parsing input file");
+			FATAL("unable to advance png chunk iterator: inconsistent state, possibly corrupted file.");
 
 		// if the current chunk is the IEND chunk, then write our chunk
 		if (!memcmp(ctx.current_chunk.chunk_type, IEND_CHUNK_TYPE, CHUNK_TYPE_LENGTH)) {
 			if (IEND_found)
 				DIE("non-compliant input file with IEND chunk defined twice (does not conform to RFC 2083)");
 			IEND_found = 1;
+		}
 
-			// deflate input file/buffer
-			strm.avail_out = DEFLATE_STREAM_BUFFER_SIZE;
-			strm.next_out = output_buffer;
+		// deflate input file/buffer
+		strm.avail_out = DEFLATE_STREAM_BUFFER_SIZE;
+		strm.next_out = output_buffer;
+		while (flush != Z_FINISH) {
+			if (!IEND_found && sparcity && (random() % sparcity == 0))
+				break;
 
-			do {
-				flush = Z_NO_FLUSH;
-
-				/*
-				 * Copy the input data (from given strbuf or file) into data
-				 * buffer for zlib deflate.
-				 * */
-				if (data) {
-					// if only a portion of chunk is remaining, use length of buffer
-					size_t len = DEFLATE_STREAM_BUFFER_SIZE;
-					if (data->len < DEFLATE_STREAM_BUFFER_SIZE) {
-						len = data->len;
-						flush = Z_FINISH;
-					}
-
-					// move from data buffer to input buffer
-					memcpy(input_buffer, data->buff, len);
-					strbuf_remove(data, 0, len);
-
-					strm.avail_in = len;
-				} else {
-					ssize_t bytes_read = recoverable_read(data_fd, input_buffer, DEFLATE_STREAM_BUFFER_SIZE);
-					if (bytes_read < 0)
-						FATAL("failed to read from data input file");
-
-					strm.avail_in = bytes_read;
-					if (bytes_read < DEFLATE_STREAM_BUFFER_SIZE)
-						flush = Z_FINISH;
+			/*
+			 * Copy the input data (from given strbuf or file) into data
+			 * buffer for zlib deflate.
+			 * */
+			if (data) {
+				// if only a portion of chunk is remaining, use length of buffer
+				size_t len = DEFLATE_STREAM_BUFFER_SIZE;
+				if (data->len < DEFLATE_STREAM_BUFFER_SIZE) {
+					len = data->len;
+					flush = Z_FINISH;
 				}
 
-				strm.next_in = input_buffer;
-				result->bytes_in += strm.avail_in;
+				// move from data buffer to input buffer
+				memcpy(input_buffer, data->buff, len);
+				strbuf_remove(data, 0, len);
 
-				/*
-				 * Run zlib deflate on input data while the output buffer is not full.
-				 * If the output buffer is full, or we reached the end of the input data,
-				 * the output buffer is written as stEG chunks to the output file in chunks
-				 * of 8192 bytes in length.
-				 * */
-				unsigned pending = 0;
-				do {
-					ret = deflate(&strm, flush);
-					if (ret == Z_STREAM_ERROR)
-						FATAL("zlib DEFLATE failed with unexpected error: %s", zError(ret));
+				strm.avail_in = len;
+			} else {
+				ssize_t bytes_read = recoverable_read(data_fd, input_buffer, DEFLATE_STREAM_BUFFER_SIZE);
+				if (bytes_read < 0)
+					FATAL("failed to read from data input file");
 
-					// if we filled the output buffer or reached end of input data, write chunks
-					if (strm.avail_out == 0 || flush == Z_FINISH) {
-						size_t data_to_write = DEFLATE_STREAM_BUFFER_SIZE - strm.avail_out;
+				strm.avail_in = bytes_read;
+				if (bytes_read < DEFLATE_STREAM_BUFFER_SIZE)
+					flush = Z_FINISH;
+			}
 
-						do {
-							size_t chunk_size = data_to_write > DEFLATE_CHUNK_DATA_LENGTH ? DEFLATE_CHUNK_DATA_LENGTH : data_to_write;
+			strm.next_in = input_buffer;
+			result->bytes_in += strm.avail_in;
 
-							write_steg_chunk_to_file_from_buffer(out_fd, output_buffer, chunk_size);
-							result->bytes_out += chunk_size;
-							result->chunks_written++;
+			// run a single pass of DEFLATE, flushing if necessary
+			size_t bytes = single_pass_deflate(&strm, output_buffer, out_fd, flush);
 
-							data_to_write -= chunk_size;
+			// multiples of 8192, plus one if reached end of file and last chunk size less than 8192
+			unsigned chunks_written = (unsigned)(bytes / DEFLATE_CHUNK_DATA_LENGTH);
+			if (bytes % DEFLATE_CHUNK_DATA_LENGTH != 0)
+				chunks_written++;
 
-							// shift data in output buffer to beginning of buffer
-							memmove(output_buffer, output_buffer + chunk_size, DEFLATE_STREAM_BUFFER_SIZE - chunk_size);
-
-							// update zlib stream state
-							strm.avail_out = DEFLATE_STREAM_BUFFER_SIZE - data_to_write;
-							strm.next_out = output_buffer + data_to_write;
-						} while (data_to_write >= DEFLATE_CHUNK_DATA_LENGTH || (data_to_write > 0 && flush == Z_FINISH));
-					}
-
-					/*
-					 * Even though we may have fully consumed the output buffer, zlib may still have some pending
-					 * data that it is waiting to write to the output buffer. If so (determined by deflatePending),
-					 * run deflate again to write it to the output buffer.
-					 * */
-					ret = deflatePending(&strm, &pending, Z_NULL);
-					if (ret != Z_OK)
-						FATAL("zlib DEFLATE failed with unexpected error: %s", zError(ret));
-				} while (strm.avail_out == 0 || pending);
-			} while (flush != Z_FINISH);
+			result->chunks_written += chunks_written;
+			result->bytes_out += bytes;
 		}
 
 		write_chunk_to_file_from_ctx(out_fd, &ctx);
@@ -431,64 +443,63 @@ static int embed_data(int in_fd, int out_fd, int data_fd, struct strbuf *data,
 }
 
 /**
- * Compute the md5 sum of an open file. The md5_hash argument must be an array of
- * length MD5_DIGEST_SIZE. The file offset is assumed to be positioned at
- * byte zero.
- * */
-static int compute_md5_sum(int fd, unsigned char md5_hash[])
-{
-	struct md5_ctx ctx;
-	ssize_t bytes_read = 0;
-
-	md5_init_ctx(&ctx);
-
-	char buffer[BUFF_LEN];
-	while ((bytes_read = recoverable_read(fd, buffer, BUFF_LEN)) > 0)
-		md5_process_bytes(buffer, bytes_read, &ctx);
-
-	if (bytes_read < 0)
-		return 1;
-
-	md5_finish_ctx(&ctx, md5_hash);
-	return 0;
-}
-
-/**
- * Print a summary of a file, with table formatting capability.
+ * Run zlib deflate on input data while the output buffer is not full.
+ * If the output buffer is full, or we reached the end of the input data,
+ * the output buffer is written as stEG chunks to the output file in chunks
+ * of 8192 bytes in length.
  *
- * Prints the file summary in the following format:
- * <filename> <file mode> <file length> <md5 hash>
- *
- * The filename may be padded with whitespace using the filename_table_len
- * argument.
+ * Returns the number of (defalted) bytes written to the file. A return value of
+ * zero indicates that the output buffer was not filled, and as a result no data
+ * was written to the file.
  * */
-static void print_file_summary(const char *file_path, int filename_table_len)
+static size_t single_pass_deflate(struct z_stream_s *strm, unsigned char *output_buffer,
+		int out_fd, int flush)
 {
-	unsigned char md5_hash[MD5_DIGEST_SIZE];
-	struct stat st;
-	int fd;
+	int ret;
+	unsigned pending = 0;
 
-	// print input file summary
-	if (lstat(file_path, &st) && errno == ENOENT)
-		FATAL("failed to stat %s'", file_path);
+	size_t bytes_out = 0;
+	size_t data_to_write, chunk_size;
+	do {
+		ret = deflate(strm, flush);
+		if (ret == Z_STREAM_ERROR)
+			FATAL("zlib DEFLATE failed with unexpected error: input file may be corrupted.\n"
+				  "zlib: %s", zError(ret));
 
-	fd = open(file_path, O_RDONLY);
-	if (fd < 0)
-		FATAL(FILE_OPEN_FAILED, file_path);
+		// if we filled the output buffer or reached end of input data, write chunks
+		if (strm->avail_out == 0 || flush == Z_FINISH) {
+			data_to_write = DEFLATE_STREAM_BUFFER_SIZE - strm->avail_out;
 
-	if (compute_md5_sum(fd, md5_hash))
-		FATAL("failed to compute md5 hash of file '%s'", file_path);
+			do {
+				// chunk size is minimum of DEFLATE_CHUNK_DATA_LENGTH and data_to_write
+				chunk_size = data_to_write > DEFLATE_CHUNK_DATA_LENGTH ? DEFLATE_CHUNK_DATA_LENGTH : data_to_write;
 
-	const char *filename = strrchr(file_path, '/');
-	filename = !filename ? file_path : filename + 1;
+				write_steg_chunk_to_file_from_buffer(out_fd, output_buffer, chunk_size);
+				bytes_out += chunk_size;
 
-	fprintf(stdout, "%s %*s", filename, filename_table_len, " ");
-	fprintf(stdout, "%o %lld ", st.st_mode, (unsigned long long int)st.st_size);
-	for (size_t i = 0; i < MD5_DIGEST_SIZE; i++)
-		fprintf(stdout, "%02x", md5_hash[i]);
-	fprintf(stdout, "\n");
+				data_to_write -= chunk_size;
 
-	close(fd);
+				// shift data in output buffer to beginning of buffer
+				memmove(output_buffer, output_buffer + chunk_size, DEFLATE_STREAM_BUFFER_SIZE - chunk_size);
+
+				// update zlib stream state
+				strm->avail_out = DEFLATE_STREAM_BUFFER_SIZE - data_to_write;
+				strm->next_out = output_buffer + data_to_write;
+			} while (data_to_write >= DEFLATE_CHUNK_DATA_LENGTH || (data_to_write > 0 && flush == Z_FINISH));
+		}
+
+		/*
+		 * Even though we may have fully consumed the output buffer, zlib may still have some pending
+		 * data that it is waiting to write to the output buffer. If so (determined by deflatePending),
+		 * run deflate again to write it to the output buffer.
+		 * */
+		ret = deflatePending(strm, &pending, Z_NULL);
+		if (ret != Z_OK)
+			FATAL("zlib DEFLATE failed with unexpected error: input file may be corrupted.\n"
+				  "zlib: %s", zError(ret));
+	} while (strm->avail_out == 0 || pending);
+
+	return bytes_out;
 }
 
 /**
@@ -498,12 +509,9 @@ static void print_file_summary(const char *file_path, int filename_table_len)
  * in  <filename> <file mode> <file length> <md5 hash>
  * out <filename> <file mode> <file length> <md5 hash>
  *
- * embedded chunk details:
- * chunk file offset: <offset of embedded chunk>
- * chunk data length: <length> (network byte order <length>)
- * chunk type: <type>
- * timestamp: <timestamp>
- * cyclic redundancy check: <32-bit CRC> (network byte order <32-bit CRC>)
+ * summary:
+ * compression factor: x.xx (xxxx in, xxxx out)
+ * chunks embedded in file: xxx
  * */
 static void print_summary(const char *original_file_path,
 		const char *new_file_path, struct chunk_summary *result)
@@ -528,6 +536,6 @@ static void print_summary(const char *original_file_path,
 	printf("\nsummary:\n");
 	printf("compression factor: %.2f (%lu in, %lu out)\n",
 			result->compression_ratio, result->bytes_in, result->bytes_out);
-	printf("chunks embedded in file: %d\n",
+	printf("chunks embedded in file: %u\n",
 			result->chunks_written);
 }

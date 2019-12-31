@@ -32,19 +32,24 @@ int cmd_extract(int argc, char *argv[])
 
 	const struct command_option extract_cmd_options[] = {
 			OPT_STRING('o', "output", "file", "alternate output file path", &output_file),
-			OPT_LONG_BOOL("hexdump", "print a hexdump of the embedded data", &hexdump),
+			OPT_LONG_BOOL("hexdump", "print a canonical hex+ASCII of the embedded data", &hexdump),
 			OPT_BOOL('h', "help", "show help and exit", &help),
 			OPT_END()
 	};
 
-	argc = parse_options(argc, argv, extract_cmd_options, 0, 0);
+	argc = parse_options(argc, argv, extract_cmd_options, 0, 1);
 	if (help) {
 		show_usage_with_options(extract_cmd_usage, extract_cmd_options, 0, NULL);
 		return 0;
 	}
 
-	if (argc != 1) {
-		show_usage_with_options(extract_cmd_usage, extract_cmd_options, 1, "too many options");
+	if (argc > 1) {
+		show_usage_with_options(extract_cmd_usage, extract_cmd_options, 1, "unknown option '%s'", argv[0]);
+		return 1;
+	}
+
+	if (argc < 1) {
+		show_usage_with_options(extract_cmd_usage, extract_cmd_options, 1, "nothing to do");
 		return 1;
 	}
 
@@ -62,7 +67,7 @@ static int extract(const char *input_file, const char *output_file, int show_hex
 
 	int in_fd = open(input_file, O_RDONLY);
 	if (in_fd < 0)
-		FATAL(FILE_OPEN_FAILED, input_file);
+		DIE(FILE_OPEN_FAILED, input_file);
 
 	// create and unlink a temporary file
 	char tmp_file_name_template[] = "/tmp/steg-png_XXXXXX";
@@ -75,7 +80,7 @@ static int extract(const char *input_file, const char *output_file, int show_hex
 	struct chunk_iterator_ctx ctx;
 	int status = chunk_iterator_init_ctx(&ctx, in_fd);
 	if (status < 0)
-		FATAL("failed to read from input file");
+		FATAL("failed to read from file descriptor");
 	else if(status > 0)
 		DIE("input file is not a PNG (does not conform to RFC 2083)");
 
@@ -186,7 +191,7 @@ static int extract(const char *input_file, const char *output_file, int show_hex
 		int out_fd = open(output_file_path.buff,  O_WRONLY | O_CREAT | O_TRUNC,
 				input_file_st.st_mode & (S_IRWXU | S_IRWXG | S_IRWXO));
 		if (out_fd < 0)
-			FATAL(FILE_OPEN_FAILED, output_file);
+			DIE(FILE_OPEN_FAILED, output_file);
 
 		if (copy_file_fd(out_fd, tmp_fd) != tmp_file_st.st_size)
 			FATAL("Failed to write to file %s", output_file_path.buff);
@@ -207,20 +212,10 @@ static void print_hex_dump(int fd)
 {
 	unsigned char buffer[4096];
 
+	off_t file_offset = 0;
 	ssize_t bytes_read = 0;
 	while ((bytes_read = recoverable_read(fd, buffer, 4096)) > 0) {
-		for (size_t i = 0; i < bytes_read; i += 16) {
-			fprintf(stdout, "%08lu  ", i);
-
-			for (size_t j = i; (j < i + 16) && (j < bytes_read); j++)
-				fprintf(stdout, "%02hhx ", buffer[j]);
-
-			fprintf(stdout, "%*s", (int)(i + 16 > bytes_read ? 3 * (i + 16 - bytes_read) + 1 : 1), " ");
-
-			fprintf(stdout, "|");
-			for (size_t j = i; (j < i + 16) && (j < bytes_read); j++)
-				fprintf(stdout, "%c", isprint(buffer[j]) ? buffer[j] : '.');
-			fprintf(stdout, "|\n");
-		}
+		hex_dump(stdout, file_offset, buffer, bytes_read);
+		file_offset += bytes_read;
 	}
 }
