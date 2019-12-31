@@ -50,7 +50,7 @@ int cmd_embed(int argc, char *argv[])
 			OPT_STRING('m', "message", "message", "specify the message to embed in the png image", &message),
 			OPT_STRING('f', "file", "file", "specify a file to embed in the png image", &file_to_embed),
 			OPT_STRING('o', "output", "file", "output to a specific file", &output_file),
-			OPT_INT('l', "compression-level", "alternate compression level (0 none, 1 fastest - 9 slowest)", &compression_level),
+			OPT_INT('l', "compression-level", "alternate compression level (0 none, 1 fastest - 9 slowest, default 6)", &compression_level),
 			OPT_BOOL('q', "quiet", "suppress informational summary to stdout", &quiet),
 			OPT_BOOL('h', "help", "show help and exit", &help),
 			OPT_END()

@@ -12,7 +12,7 @@
 
 static int parse_long_option(int, char *[], int, const struct command_option[]);
 static int parse_short_option(int, char *[], int, const struct command_option[]);
-static int parse_subcommand(int, char *[], int, const struct command_option[]);
+static int parse_subcommand(char *[], int, const struct command_option[]);
 static inline void array_shift(char *[], int, int *, int);
 
 int parse_options(int argc, char *argv[], const struct command_option options[],
@@ -45,7 +45,7 @@ int parse_options(int argc, char *argv[], const struct command_option options[],
 			shifted_args = parse_short_option(new_len, argv, arg_index, options);
 		} else {
 			// if argument is not an option, check to see if it is a valid command
-			int found = parse_subcommand(new_len, argv, arg_index, options);
+			int found = parse_subcommand(argv, arg_index, options);
 			if (found)
 				return new_len;
 		}
@@ -167,8 +167,7 @@ static int parse_short_option(int argc, char *argv[], int arg_index,
 				break;
 			}
 
-			if (op->type == OPTION_INT_T || op->type == OPTION_STRING_T ||
-				op->type == OPTION_STRING_LIST_T) {
+			if (op->type == OPTION_STRING_T || op->type == OPTION_STRING_LIST_T) {
 				// intermediate options that accept values are disallowed
 				if (*(arg + 1))
 					return argc - new_len;
@@ -179,15 +178,28 @@ static int parse_short_option(int argc, char *argv[], int arg_index,
 			}
 
 			if (op->type == OPTION_INT_T) {
-				arg = argv[arg_index + 1];
 				char *tailptr = NULL;
-				long arg_value = strtol(arg, &tailptr, 0);
+				long arg_value = 0;
 
-				// verify that integer was parsed successfully
-				if (tailptr == (arg + strlen(arg))) {
-					array_shift(argv, arg_index, &new_len, 2);
+				if (*(arg + 1)) {
+					// if integer follows flag (e.g. '-c9', '-d101')
+					arg = arg + 1;
+					arg_value = strtol(arg, &tailptr, 0);
 
-					*(long *) op->arg_value = arg_value;
+					// verify that integer was parsed successfully
+					if (tailptr == (arg + strlen(arg))) {
+						array_shift(argv, arg_index, &new_len, 1);
+						*(long *) op->arg_value = arg_value;
+					}
+				} else {
+					arg = argv[arg_index + 1];
+					arg_value = strtol(arg, &tailptr, 0);
+
+					// verify that integer was parsed successfully
+					if (tailptr == (arg + strlen(arg))) {
+						array_shift(argv, arg_index, &new_len, 2);
+						*(long *) op->arg_value = arg_value;
+					}
 				}
 
 				return argc - new_len;
@@ -215,7 +227,7 @@ static int parse_short_option(int argc, char *argv[], int arg_index,
 	return argc - new_len;
 }
 
-static int parse_subcommand(int argc, char *argv[], int arg_index,
+static int parse_subcommand(char *argv[], int arg_index,
 		const struct command_option options[])
 {
 	for (const struct command_option *op = options; op->type != OPTION_END; op++) {
