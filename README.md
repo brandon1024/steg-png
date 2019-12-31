@@ -56,6 +56,16 @@ usage: steg-png embed [options] (-m | --message <message>) <file>
                         alternate compression level (0 none, 1 fastest - 9 slowest)
     -q, --quiet         suppress informational summary to stdout
     -h, --help          show help and exit
+
+
+usage: steg-png extract [-o | --output <file>] <file>
+   or: steg-png extract [--hexdump] <file>
+   or: steg-png extract (-h | --help)
+
+    -o, --output <file>
+                        alternate output file path
+    --hexdump           print a hexdump of the embedded data
+    -h, --help          show help and exit
 ```
 
 ## Using steg-png with GNU Privacy Guard (GPG)

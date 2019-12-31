@@ -12,12 +12,9 @@
 #include "utils.h"
 #include "zlib.h"
 
-#define BUFF_LEN 1024
-#define DEFLATE_CHUNK_DATA_LENGTH 8192
 #define DEFLATE_STREAM_BUFFER_SIZE 16384
 
 static int extract(const char *, const char *, int);
-static int inflate_data(unsigned char *, size_t, int);
 static void print_hex_dump(int fd);
 
 int cmd_extract(int argc, char *argv[])
@@ -34,7 +31,7 @@ int cmd_extract(int argc, char *argv[])
 	};
 
 	const struct command_option extract_cmd_options[] = {
-			OPT_STRING('o', "--output", "file", "alternate output file path", &output_file),
+			OPT_STRING('o', "output", "file", "alternate output file path", &output_file),
 			OPT_LONG_BOOL("hexdump", "print a hexdump of the embedded data", &hexdump),
 			OPT_BOOL('h', "help", "show help and exit", &help),
 			OPT_END()
