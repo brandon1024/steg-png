@@ -66,6 +66,17 @@ usage: steg-png extract [-o | --output <file>] <file>
                         alternate output file path
     --hexdump           print a hexdump of the embedded data
     -h, --help          show help and exit
+
+usage: steg-png inspect [--filter <type>...] [--critical] [--ancillary] [--hexdump] <file>
+   or: steg-png inspect (-i | --interactive) <file>
+   or: steg-png inspect (-h | --help)
+
+    -i, --interactive   display each chunk, interactively
+    --hexdump           print a hexdump of the embedded data
+                        show chunks with specific type
+    --critical          show critical chunks
+    --ancillary         show ancillary chunks
+    -h, --help          show help and exit
 ```
 
 ## Using steg-png with GNU Privacy Guard (GPG)

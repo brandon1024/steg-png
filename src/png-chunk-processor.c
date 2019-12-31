@@ -28,7 +28,7 @@ int chunk_iterator_init_ctx(struct chunk_iterator_ctx *ctx, int fd)
 	if (recoverable_read(fd, signature, SIGNATURE_LENGTH) != SIGNATURE_LENGTH)
 		return -1;
 
-	if (memcmp(PNG_SIG, signature, SIGNATURE_LENGTH) != 0)
+	if (memcmp(PNG_SIG, signature, SIGNATURE_LENGTH * sizeof(unsigned char)) != 0)
 		return 1;
 
 	ctx->fd = fd;

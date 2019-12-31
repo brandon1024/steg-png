@@ -9,5 +9,6 @@ struct steg_png_builtin {
 extern int cmd_embed(int argc, char *argv[]);
 extern int cmd_extract(int argc, char *argv[]);
 extern int cmd_inspect(int argc, char *argv[]);
+extern int cmd_inspect_interactive(int argc, char *argv[]);
 
 #endif //STEG_PNG_BUILTIN_H

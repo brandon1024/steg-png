@@ -109,7 +109,8 @@ int chunk_iterator_next(struct chunk_iterator_ctx *ctx);
 ssize_t chunk_iterator_read_data(struct chunk_iterator_ctx *ctx, unsigned char *buffer, size_t length);
 
 /**
- * Get the length of the current chunk. The length is written to 'len'.
+ * Get the length of the data for the current chunk, in host byte order.
+ * The length is written to 'len'.
  *
  * Returns zero if successful, and non-zero otherwise.
  * */
@@ -124,7 +125,7 @@ int chunk_iterator_get_chunk_data_length(struct chunk_iterator_ctx *ctx, u_int32
 int chunk_iterator_get_chunk_type(struct chunk_iterator_ctx *ctx, char type[]);
 
 /**
- * Get the CRC for the current chunk.
+ * Get the CRC for the current chunk, in host byte order.
  *
  * Returns zero if successful, and non-zero otherwise.
  * */
