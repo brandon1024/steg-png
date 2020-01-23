@@ -152,7 +152,7 @@ ssize_t copy_file_fd(int dest_fd, int src_fd)
 void hex_dump(FILE *output_stream, off_t offset, unsigned char *buffer, size_t len)
 {
 	for (size_t i = 0; i < len; i += 16) {
-		fprintf(output_stream, "%08llx  ", i + offset);
+		fprintf(output_stream, "%08lx  ", (unsigned long)(i + offset));
 
 		for (size_t j = i; (j < i + 16) && (j < len); j++)
 			fprintf(output_stream, "%02hhx ", buffer[j]);

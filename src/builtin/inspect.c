@@ -170,7 +170,7 @@ static int print_png_summary(const char *file_path, struct str_array *types,
 		chunk_iterator_get_chunk_crc(&ctx, &crc);
 
 		fprintf(stdout, "chunk type: %4s\n", type);
-		fprintf(stdout, "file offset: %lld\n", ctx.chunk_file_offset);
+		fprintf(stdout, "file offset: %lld\n", (long long int)ctx.chunk_file_offset);
 		fprintf(stdout, "data length: %u\n", len);
 		fprintf(stdout, "cyclic redundancy check: %u (network byte order %#x)\n", crc, htonl(crc));
 

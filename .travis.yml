@@ -7,7 +7,7 @@ matrix:
       addons:
         apt:
           packages:
-            - zlib
+            - zlib1g-dev
       env:
         - MATRIX_EVAL="CC=gcc && CXX=g++"
     - os: linux
@@ -15,7 +15,7 @@ matrix:
       addons:
         apt:
           packages:
-            - zlib
+            - zlib1g-dev
       env:
         - MATRIX_EVAL="CC=clang && CXX=clang++"
     - os: osx
@@ -46,5 +46,5 @@ before_script:
   - cmake -DCMAKE_INSTALL_PREFIX=/usr/local ..
 
 script:
-  - make all install
+  - sudo make all install
   - ctest

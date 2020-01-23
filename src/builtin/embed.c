@@ -5,7 +5,7 @@
 #include <errno.h>
 #include <sys/stat.h>
 #include <arpa/inet.h>
-#include <time.h>
+#include <sys/time.h>
 #include <limits.h>
 #include <libgen.h>
 
@@ -374,11 +374,11 @@ static int embed_data(int in_fd, int out_fd, int data_fd, struct strbuf *data,
 		sparcity = compute_sparcity(st.st_size, data_st.st_size);
 	}
 
-	// seed PRNG
-	struct timespec ts;
-	if (timespec_get(&ts, TIME_UTC) == 0)
-		FATAL("unable to seed PRNG; timespec_get with base TIME_UTC failed unexpectedly");
-	srandom(ts.tv_nsec ^ ts.tv_sec);
+	struct timeval time;
+	if (gettimeofday(&time, NULL))
+		FATAL("unable to seed PRNG; gettimeofday failed unexpectedly");
+
+	srandom((unsigned)time.tv_sec ^ (unsigned)time.tv_usec);
 
 	int has_next_chunk, IEND_found = 0, IHDR_found = 0;
 	while ((has_next_chunk = chunk_iterator_has_next(&ctx)) != 0) {
