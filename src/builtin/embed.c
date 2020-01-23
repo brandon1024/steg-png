@@ -7,6 +7,7 @@
 #include <arpa/inet.h>
 #include <time.h>
 #include <limits.h>
+#include <libgen.h>
 
 #include "md5.h"
 #include "strbuf.h"
@@ -41,8 +42,8 @@ int cmd_embed(int argc, char *argv[])
 	int quiet = 0;
 
 	const struct usage_string embed_cmd_usage[] = {
-			USAGE("steg-png embed [options] (-m | --message <message>) <file>"),
-			USAGE("steg-png embed [options] (-f | --file <file>) <file>"),
+			USAGE("steg-png embed [options] (-m | --message <message>) [(-q | --quiet)] <file>"),
+			USAGE("steg-png embed [options] (-f | --file <file>) [(-q | --quiet)] <file>"),
 			USAGE("steg-png embed (-h | --help)"),
 			USAGE_END()
 	};
@@ -96,7 +97,7 @@ int cmd_embed(int argc, char *argv[])
 	if (output_file)
 		strbuf_attach_str(&output_file_path, output_file);
 	else
-		strbuf_attach_fmt(&output_file_path, "%s.steg", argv[0]);
+		strbuf_attach_fmt(&output_file_path, "%s.steg", basename(argv[0]));
 
 	// embed the message/file in a chunk, and get a summary of the chunk that was embedded
 	struct chunk_summary result = {
@@ -161,21 +162,34 @@ static int embed(const char *input_file, const char *output_file,
 
 		embed_data(in_fd, tmp_fd, file_to_embed_fd, NULL, result);
 		close(file_to_embed_fd);
-	} else {
+	} else if (!message) {
 		// if no message was given, take from stdin
+		char tmp_input_file_name_template[] = "/tmp/steg-png_XXXXXX";
+		int tmp_in_fd = mkstemp(tmp_input_file_name_template);
+		if (tmp_in_fd < 0)
+			FATAL("unable to create temporary file");
+		if (unlink(tmp_input_file_name_template) < 0)
+			FATAL("failed to unlink temporary file from filesystem");
+
+		char buffer[BUFF_LEN];
+		ssize_t bytes_read = 0;
+		while ((bytes_read = recoverable_read(STDIN_FILENO, buffer, BUFF_LEN)) > 0)
+			if (recoverable_write(tmp_in_fd, buffer, bytes_read) != bytes_read)
+				FATAL("failed to write to temporary outfile file");
+
+		if (bytes_read < 0)
+			FATAL("unable to read message from stdin");
+
+		if (lseek(tmp_fd, 0, SEEK_SET) < 0)
+			FATAL("failed to set the file offset for temporary file");
+
+		embed_data(in_fd, tmp_fd, tmp_in_fd, NULL, result);
+		close(tmp_in_fd);
+	} else {
 		struct strbuf message_buf;
 		strbuf_init(&message_buf);
-		if (!message) {
-			char buffer[BUFF_LEN];
-			ssize_t bytes_read = 0;
-			while ((bytes_read = recoverable_read(STDIN_FILENO, buffer, BUFF_LEN)) > 0)
-				strbuf_attach_bytes(&message_buf, buffer, bytes_read);
 
-			if (bytes_read < 0)
-				FATAL("unable to read message from stdin");
-		} else {
-			strbuf_attach_str(&message_buf, message);
-		}
+		strbuf_attach_str(&message_buf, message);
 
 		embed_data(in_fd, tmp_fd, -1, &message_buf, result);
 		strbuf_release(&message_buf);
@@ -279,11 +293,15 @@ void write_steg_chunk_to_file_from_buffer(int dest_fd, void *buffer, size_t leng
  * Compute the sparcity constant used to determine how sparsely the embedded chunks will be
  * distributed in the file.
  *
+ * This constant is a rough estimate; it assumes that each chunk has a length of 8192 bytes,
+ * but it's close enough for most situations.
+ *
  * A value of 0 indicates that embedded chunks should not be sparse, (i.e. localized).
  * */
 static inline unsigned int compute_sparcity(off_t source_file_len, off_t data_len)
 {
-	return (unsigned int)((source_file_len / data_len) % UINT_MAX);
+	double data_length_factor = (unsigned int)((source_file_len / data_len) % UINT_MAX);
+	return (unsigned)(data_length_factor / DEFLATE_CHUNK_DATA_LENGTH);
 }
 
 static size_t single_pass_deflate(struct z_stream_s *, unsigned char *, int, int);
@@ -362,7 +380,7 @@ static int embed_data(int in_fd, int out_fd, int data_fd, struct strbuf *data,
 		FATAL("unable to seed PRNG; timespec_get with base TIME_UTC failed unexpectedly");
 	srandom(ts.tv_nsec ^ ts.tv_sec);
 
-	int has_next_chunk, IEND_found = 0;
+	int has_next_chunk, IEND_found = 0, IHDR_found = 0;
 	while ((has_next_chunk = chunk_iterator_has_next(&ctx)) != 0) {
 		if (has_next_chunk < 0)
 			DIE("unable to parse input file: file does not appear to represent a valid PNG file, or may be corrupted.");
@@ -371,17 +389,14 @@ static int embed_data(int in_fd, int out_fd, int data_fd, struct strbuf *data,
 			FATAL("unable to advance png chunk iterator: inconsistent state, possibly corrupted file.");
 
 		// if the current chunk is the IEND chunk, then write our chunk
-		if (!memcmp(ctx.current_chunk.chunk_type, IEND_CHUNK_TYPE, CHUNK_TYPE_LENGTH)) {
-			if (IEND_found)
-				DIE("non-compliant input file with IEND chunk defined twice (does not conform to RFC 2083)");
-			IEND_found = 1;
-		}
+		if (!memcmp(ctx.current_chunk.chunk_type, IEND_CHUNK_TYPE, CHUNK_TYPE_LENGTH))
+			IEND_found++;
 
 		// deflate input file/buffer
 		strm.avail_out = DEFLATE_STREAM_BUFFER_SIZE;
 		strm.next_out = output_buffer;
 		while (flush != Z_FINISH) {
-			if (!IEND_found && sparcity && (random() % sparcity == 0))
+			if (!IHDR_found || (!IEND_found && sparcity && (random() % sparcity != 0)))
 				break;
 
 			/*
@@ -427,6 +442,9 @@ static int embed_data(int in_fd, int out_fd, int data_fd, struct strbuf *data,
 		}
 
 		write_chunk_to_file_from_ctx(out_fd, &ctx);
+
+		if (!memcmp(ctx.current_chunk.chunk_type, IHDR_CHUNK_TYPE, CHUNK_TYPE_LENGTH))
+			IHDR_found++;
 	}
 
 	(void)deflateEnd(&strm);
@@ -435,8 +453,10 @@ static int embed_data(int in_fd, int out_fd, int data_fd, struct strbuf *data,
 
 	result->compression_ratio = result->bytes_out == 0 ? 0.0 : (float)result->bytes_out / (float)result->bytes_in;
 
-	if (!IEND_found)
-		DIE("non-compliant input file no IEND chunk defined (does not conform to RFC 2083)");
+	if (IHDR_found != 1)
+		DIE("non-compliant input file; IHDR chunk defined %d times (does not conform to RFC 2083)", IHDR_found);
+	if (IEND_found != 1)
+		DIE("non-compliant input file; IEND chunk defined %d times (does not conform to RFC 2083)", IEND_found);
 
 	chunk_iterator_destroy_ctx(&ctx);
 	return 0;

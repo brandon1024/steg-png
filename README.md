@@ -1,4 +1,6 @@
 # steg-png
+[![Build Status](https://travis-ci.com/brandon1024/steg-png.svg?branch=master)](https://travis-ci.com/brandon1024/steg-png)
+
 `steg-png` is a simple C-based commandline application that can be used to embed data in Portable Network Graphics (PNG) images. This concept is known as steganography, and is useful for concealing hidden messages in otherwise unassuming files.
 
 ![](screenshot.png)

@@ -25,7 +25,7 @@ int cmd_inspect(int argc, char *argv[])
 	str_array_init(&filter_list);
 
 	const struct usage_string inspect_cmd_usage[] = {
-			USAGE("steg-png inspect [--filter <type>...] [--critical] [--ancillary] [--hexdump] <file>"),
+			USAGE("steg-png inspect [(--filter <chunk type>)...] [--critical] [--ancillary] [--hexdump] <file>"),
 			USAGE("steg-png inspect (-i | --interactive) <file>"),
 			USAGE("steg-png inspect (-h | --help)"),
 			USAGE_END()
@@ -147,12 +147,10 @@ static int print_png_summary(const char *file_path, struct str_array *types,
 		chunk_iterator_get_chunk_type(&ctx, type);
 		type[CHUNK_TYPE_LENGTH] = 0;
 
-		int filtered = 0;
+		int filtered = types->len > 0 ? 1 : 0;
 		for (size_t i = 0; i < types->len; i++) {
-			if (strcmp(type, str_array_get(types, i)) != 0) {
-				filtered = 1;
-				break;
-			}
+			if (!strcmp(type, str_array_get(types, i)))
+				filtered = 0;
 		}
 
 		if (show_ancillary || show_critical) {
@@ -172,7 +170,7 @@ static int print_png_summary(const char *file_path, struct str_array *types,
 		chunk_iterator_get_chunk_crc(&ctx, &crc);
 
 		fprintf(stdout, "chunk type: %4s\n", type);
-		fprintf(stdout, "file offset: %lu\n", ctx.chunk_file_offset);
+		fprintf(stdout, "file offset: %lld\n", ctx.chunk_file_offset);
 		fprintf(stdout, "data length: %u\n", len);
 		fprintf(stdout, "cyclic redundancy check: %u (network byte order %#x)\n", crc, htonl(crc));
 
