@@ -69,15 +69,17 @@ usage: steg-png extract [-o | --output <file>] <file>
     --hexdump           print a hexdump of the embedded data
     -h, --help          show help and exit
 
-usage: steg-png inspect [--filter <type>...] [--critical] [--ancillary] [--hexdump] <file>
+usage: steg-png inspect [(--filter <chunk type>)...] [--critical] [--ancillary] [--hexdump] <file>
    or: steg-png inspect (-i | --interactive) <file>
    or: steg-png inspect (-h | --help)
 
-    -i, --interactive   display each chunk, interactively
-    --hexdump           print a hexdump of the embedded data
+    --hexdump           print a canonical hex+ASCII hexdump of the embedded data
                         show chunks with specific type
     --critical          show critical chunks
     --ancillary         show ancillary chunks
+    --machine-readable
+                        show output in machine-readable format
+    -z, --nul           terminate lines with NUL byte instead of line feed
     -h, --help          show help and exit
 ```
 

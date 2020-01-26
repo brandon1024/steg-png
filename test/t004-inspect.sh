@@ -54,6 +54,22 @@
 
 	steg-png inspect --hexdump resources/test.png >out &&
 	grep -e '^[0-9a-z]\{8\}  \(\([0-9a-z]\)\{2\} \)\{16\} |.*|$' out
+) && (
+	echo '--machine-readable should show output in machine-readable format' &&
+
+	steg-png embed -m "hello world" resources/test.png &&
+	steg-png inspect --machine-readable test.png.steg >out &&
+	[[ "$(wc -l <out)" =~ "66" ]] &&
+	grep -e "^IDAT" out >chunks &&
+	[[ "$(wc -l <chunks)" =~ "58" ]] &&
+	grep -e "^stEG" out >chunks &&
+	[[ "$(wc -l <chunks)" =~ "1" ]] &&
+	head -1 out >fhead &&
+	grep -e "^IHDR" fhead >chunks &&
+	[[ "$(wc -l <chunks)" =~ "1" ]] &&
+	tail -1 out >ftail &&
+	grep -e "^IEND" ftail >chunks &&
+	[[ "$(wc -l <chunks)" =~ "1" ]]
 ) || (
 	>&2 echo "failure" &&
 	exit 1
