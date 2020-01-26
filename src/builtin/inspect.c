@@ -10,15 +10,15 @@
 #include "str-array.h"
 #include "png-chunk-processor.h"
 #include "utils.h"
-#include "builtin.h"
 
 static int print_png_summary(const char *, struct str_array *, int, int, int);
+static int print_machine_friendly_summary(const char *, struct str_array *, int, int, int);
 
 int cmd_inspect(int argc, char *argv[])
 {
-	int interactive = 0;
 	int hexdump = 0;
 	int ancillary = 0, critical = 0;
+	int machine = 0, nul = 0;
 	int help = 0;
 
 	struct str_array filter_list;
@@ -32,11 +32,12 @@ int cmd_inspect(int argc, char *argv[])
 	};
 
 	const struct command_option inspect_cmd_options[] = {
-			OPT_BOOL('i', "interactive", "display each chunk, interactively", &interactive),
 			OPT_LONG_BOOL("hexdump", "print a canonical hex+ASCII hexdump of the embedded data", &hexdump),
 			OPT_LONG_STRING_LIST("filter", "chunk type", "show chunks with specific type", &filter_list),
 			OPT_LONG_BOOL("critical", "show critical chunks", &critical),
 			OPT_LONG_BOOL("ancillary", "show ancillary chunks", &ancillary),
+			OPT_LONG_BOOL("machine-readable", "show output in machine-readable format", &machine),
+			OPT_BOOL('z', "nul", "terminate lines with NUL byte instead of line feed", &nul),
 			OPT_BOOL('h', "help", "show help and exit", &help),
 			OPT_END()
 	};
@@ -60,17 +61,30 @@ int cmd_inspect(int argc, char *argv[])
 		return 1;
 	}
 
-	if (interactive) {
+	if (machine && hexdump) {
+		show_usage_with_options(inspect_cmd_usage, inspect_cmd_options, 1, "mixing --porcelain and --hexdump doesn't make sense");
 		str_array_release(&filter_list);
-		return cmd_inspect_interactive(argc, argv);
+		return 1;
 	}
 
-	int ret = print_png_summary(argv[0], &filter_list, hexdump, critical, ancillary);
+	if (!machine && nul) {
+		show_usage_with_options(inspect_cmd_usage, inspect_cmd_options, 1, "--nul without --porcelain is not supported");
+		str_array_release(&filter_list);
+		return 1;
+	}
+
+	int ret;
+	if (machine)
+		ret = print_machine_friendly_summary(argv[0], &filter_list, critical, ancillary, nul);
+	else
+		ret = print_png_summary(argv[0], &filter_list, hexdump, critical, ancillary);
+
 	str_array_release(&filter_list);
 
 	return ret;
 }
 
+static int chunk_filtered(struct chunk_iterator_ctx *, struct str_array *, int, int);
 static void get_chunk_types(int, struct str_array *);
 static void print_filter_summary(struct str_array *, int, int);
 
@@ -143,25 +157,12 @@ static int print_png_summary(const char *file_path, struct str_array *types,
 		if (chunk_iterator_next(&ctx) != 0)
 			FATAL("unable to advance png chunk iterator: inconsistent state, possibly corrupted file.");
 
+		if (chunk_filtered(&ctx, types, show_critical, show_ancillary))
+			continue;
+
 		char type[CHUNK_TYPE_LENGTH + 1] = {0};
 		chunk_iterator_get_chunk_type(&ctx, type);
 		type[CHUNK_TYPE_LENGTH] = 0;
-
-		int filtered = types->len > 0 ? 1 : 0;
-		for (size_t i = 0; i < types->len; i++) {
-			if (!strcmp(type, str_array_get(types, i)))
-				filtered = 0;
-		}
-
-		if (show_ancillary || show_critical) {
-			if (!show_ancillary && chunk_iterator_is_ancillary(&ctx))
-				filtered = 1;
-			if (!show_critical && chunk_iterator_is_critical(&ctx))
-				filtered = 1;
-		}
-
-		if (filtered)
-			continue;
 
 		u_int32_t len = 0;
 		chunk_iterator_get_chunk_data_length(&ctx, &len);
@@ -195,6 +196,74 @@ static int print_png_summary(const char *file_path, struct str_array *types,
 
 	str_array_release(&chunks);
 	return 0;
+}
+
+static int print_machine_friendly_summary(const char *file_path, struct str_array *types,
+		int show_critical, int show_ancillary, int nul_term)
+{
+	int fd = open(file_path, O_RDONLY);
+	if (fd < 0)
+		DIE(FILE_OPEN_FAILED, file_path);
+
+	struct chunk_iterator_ctx ctx;
+	int ret = chunk_iterator_init_ctx(&ctx, fd);
+	if (ret < 0)
+		FATAL("failed to read from file descriptor");
+	else if(ret > 0)
+		DIE("input file is not a PNG (does not conform to RFC 2083)");
+
+	int has_next_chunk;
+	while ((has_next_chunk = chunk_iterator_has_next(&ctx)) != 0) {
+		if (has_next_chunk < 0)
+			DIE("unable to parse input file: file does not appear to represent a valid PNG file, or may be corrupted.");
+		if (chunk_iterator_next(&ctx) != 0)
+			FATAL("unable to advance png chunk iterator: inconsistent state, possibly corrupted file.");
+
+		if (chunk_filtered(&ctx, types, show_critical, show_ancillary))
+			continue;
+
+		char type[CHUNK_TYPE_LENGTH + 1] = {0};
+		chunk_iterator_get_chunk_type(&ctx, type);
+		type[CHUNK_TYPE_LENGTH] = 0;
+
+		u_int32_t len = 0;
+		chunk_iterator_get_chunk_data_length(&ctx, &len);
+
+		u_int32_t crc = 0;
+		chunk_iterator_get_chunk_crc(&ctx, &crc);
+
+		fprintf(stdout, "%4s %lld %u %u", type, (long long int)ctx.chunk_file_offset, len, crc);
+		fprintf(stdout, "%c", nul_term ? 0 : '\n');
+	}
+
+	chunk_iterator_destroy_ctx(&ctx);
+
+	close(fd);
+
+	return 0;
+}
+
+static int chunk_filtered(struct chunk_iterator_ctx *ctx, struct str_array *types,
+		int show_critical, int show_ancillary)
+{
+	char type[CHUNK_TYPE_LENGTH + 1] = {0};
+	chunk_iterator_get_chunk_type(ctx, type);
+	type[CHUNK_TYPE_LENGTH] = 0;
+
+	int filtered = types->len > 0 ? 1 : 0;
+	for (size_t i = 0; i < types->len; i++) {
+		if (!strcmp(type, str_array_get(types, i)))
+			filtered = 0;
+	}
+
+	if (show_ancillary || show_critical) {
+		if (!show_ancillary && chunk_iterator_is_ancillary(ctx))
+			filtered = 1;
+		if (!show_critical && chunk_iterator_is_critical(ctx))
+			filtered = 1;
+	}
+
+	return filtered;
 }
 
 static void get_chunk_types(int fd, struct str_array *types)
