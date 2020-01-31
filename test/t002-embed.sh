@@ -70,6 +70,13 @@
 
 	! steg-png embed -m "hello world"  resources/unknown 2>err &&
 	grep -i "no such file or directory" err
+) && (
+	echo "taking input from stdin should embed correctly" &&
+
+	echo "hello world" >in &&
+	cat in | steg-png embed -o steg resources/test.png &&
+	steg-png extract -o out steg &&
+	grep "hello world" out
 ) || (
 	>&2 echo "failure" &&
 	exit 1
