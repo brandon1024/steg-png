@@ -180,7 +180,7 @@ static int embed(const char *input_file, const char *output_file,
 		if (bytes_read < 0)
 			FATAL("unable to read message from stdin");
 
-		if (lseek(tmp_fd, 0, SEEK_SET) < 0)
+		if (lseek(tmp_in_fd, 0, SEEK_SET) < 0)
 			FATAL("failed to set the file offset for temporary file");
 
 		embed_data(in_fd, tmp_fd, tmp_in_fd, NULL, result);
