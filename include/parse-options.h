@@ -2,6 +2,7 @@
 #define STEG_PNG_PARSE_OPTIONS_H
 
 #include <stdarg.h>
+#include <stddef.h>
 
 enum opt_type {
 	OPTION_BOOL_T,
