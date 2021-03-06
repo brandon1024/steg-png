@@ -11,12 +11,12 @@
 #include "png-chunk-processor.h"
 #include "utils.h"
 
-static int print_png_summary(const char *, struct str_array *, int, int, int);
+static int print_png_summary(const char *, struct str_array *, int, int, int, int);
 static int print_machine_friendly_summary(const char *, struct str_array *, int, int, int);
 
 int cmd_inspect(int argc, char *argv[])
 {
-	int hexdump = 0;
+	int hexdump = 0, full_source = 0;
 	int ancillary = 0, critical = 0;
 	int machine = 0, nul = 0;
 	int help = 0;
@@ -25,14 +25,16 @@ int cmd_inspect(int argc, char *argv[])
 	str_array_init(&filter_list);
 
 	const struct usage_string inspect_cmd_usage[] = {
-			USAGE("steg-png inspect [(--filter <chunk type>)...] [--critical] [--ancillary] [--hexdump] <file>"),
-			USAGE("steg-png inspect (-i | --interactive) <file>"),
+			USAGE("steg-png inspect [(--filter <chunk type>)...] [--critical] [--ancillary] <file>"),
+			USAGE("steg-png inspect [<options>...] --hexdump [--full-source] <file>"),
+			USAGE("steg-png inspect [<options>...] --machine-readable [(-z | --nul)] <file>"),
 			USAGE("steg-png inspect (-h | --help)"),
 			USAGE_END()
 	};
 
 	const struct command_option inspect_cmd_options[] = {
-			OPT_LONG_BOOL("hexdump", "print a canonical hex+ASCII hexdump of the embedded data", &hexdump),
+			OPT_LONG_BOOL("hexdump", "print a canonical hex+ASCII hexdump of chunk data as it appears in the file", &hexdump),
+			OPT_LONG_BOOL("full-source", "show full hexdump of chunk as it appears in the file (including control bytes)", &full_source),
 			OPT_LONG_STRING_LIST("filter", "chunk type", "show chunks with specific type", &filter_list),
 			OPT_LONG_BOOL("critical", "show critical chunks", &critical),
 			OPT_LONG_BOOL("ancillary", "show ancillary chunks", &ancillary),
@@ -73,11 +75,17 @@ int cmd_inspect(int argc, char *argv[])
 		return 1;
 	}
 
+	if (!hexdump && full_source) {
+		show_usage_with_options(inspect_cmd_usage, inspect_cmd_options, 1, "--full-source without --hexdump isn't supported");
+		str_array_release(&filter_list);
+		return 1;
+	}
+
 	int ret;
 	if (machine)
 		ret = print_machine_friendly_summary(argv[0], &filter_list, critical, ancillary, nul);
 	else
-		ret = print_png_summary(argv[0], &filter_list, hexdump, critical, ancillary);
+		ret = print_png_summary(argv[0], &filter_list, hexdump, full_source, critical, ancillary);
 
 	str_array_release(&filter_list);
 
@@ -105,7 +113,7 @@ static void print_filter_summary(struct str_array *, int, int);
  * ...
  * */
 static int print_png_summary(const char *file_path, struct str_array *types,
-		int hexdump, int show_critical, int show_ancillary)
+		int hexdump, int full_source, int show_critical, int show_ancillary)
 {
 	fprintf(stdout, "png file summary:\n");
 	print_file_summary(file_path, 0);
@@ -148,6 +156,10 @@ static int print_png_summary(const char *file_path, struct str_array *types,
 		FATAL("failed to read from file descriptor");
 	else if(ret > 0)
 		DIE("input file is not a PNG (does not conform to RFC 2083)");
+
+	// read the entire chunk, as it appears in the file
+	if (full_source)
+		ctx.read_full = 1;
 
 	int has_next_chunk;
 	while ((has_next_chunk = chunk_iterator_has_next(&ctx)) != 0) {

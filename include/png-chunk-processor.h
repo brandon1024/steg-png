@@ -63,6 +63,7 @@ struct png_chunk_detail {
 struct chunk_iterator_ctx {
 	int fd;
 	unsigned int initialized: 1;
+	unsigned int read_full: 1;
 	off_t chunk_file_offset;
 	struct png_chunk_detail current_chunk;
 };
@@ -102,9 +103,16 @@ int chunk_iterator_has_next(struct chunk_iterator_ctx *ctx);
 int chunk_iterator_next(struct chunk_iterator_ctx *ctx);
 
 /**
- * Read at most 'length' bytes from the current chunk data into the buffer. If
- * all bytes have been read for the current chunk, returns zero and the buffer
- * is left unchanged. Otherwise returns the number of bytes read into the buffer.
+ * Read data from the current chunk into the given buffer.
+ *
+ * This function has two modes of operation. If `read_full` is enabled on the
+ * context, reads will include header/control bytes and data. If disabled,
+ * only data from the chunks data segment are read.
+ *
+ * At most 'length' bytes are read from the chunk. If all bytes has been read
+ * for the current chunk, returns zero and the buffer is left unchanged.
+ * Otherwise returns the number of bytes read into the buffer. This function
+ * may also return -1 if the context has an inconsistent state.
  * */
 ssize_t chunk_iterator_read_data(struct chunk_iterator_ctx *ctx, unsigned char *buffer, size_t length);
 

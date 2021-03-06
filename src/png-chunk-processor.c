@@ -17,6 +17,7 @@ const char IDAT_CHUNK_TYPE[] = {'I', 'D', 'A', 'T'};
 const char IEND_CHUNK_TYPE[] = {'I', 'E', 'N', 'D'};
 
 static int construct_png_chunk_detail(int, struct png_chunk_detail *);
+static off_t get_next_chunk_offset(struct chunk_iterator_ctx *);
 
 int chunk_iterator_init_ctx(struct chunk_iterator_ctx *ctx, int fd)
 {
@@ -33,10 +34,11 @@ int chunk_iterator_init_ctx(struct chunk_iterator_ctx *ctx, int fd)
 
 	ctx->fd = fd;
 	ctx->initialized = 0;
+	ctx->read_full = 0;
 	ctx->current_chunk = (struct png_chunk_detail) {
 		.chunk_type = {0, 0, 0, 0},
 		.data_length = 0,
-		.chunk_crc = 0
+		.chunk_crc = 0,
 	};
 
 	return 0;
@@ -52,15 +54,9 @@ int chunk_iterator_has_next(struct chunk_iterator_ctx *ctx)
 		return -1;
 
 	// move the file offset to the beginning of the next chunk
-	struct png_chunk_detail current_chunk = ctx->current_chunk;
 	if (ctx->initialized) {
-		off_t next_chunk_offset = ctx->chunk_file_offset;
-		next_chunk_offset += sizeof(u_int32_t);
-		next_chunk_offset += sizeof(char) * CHUNK_TYPE_LENGTH;
-		next_chunk_offset += sizeof(unsigned char) * current_chunk.data_length;
-		next_chunk_offset += sizeof(u_int32_t);
-
-		if (lseek(ctx->fd, next_chunk_offset, SEEK_SET) < 0)
+		off_t offset = get_next_chunk_offset(ctx);
+		if (lseek(ctx->fd, offset, SEEK_SET) < 0)
 			return -1;
 	}
 
@@ -82,16 +78,9 @@ int chunk_iterator_has_next(struct chunk_iterator_ctx *ctx)
 int chunk_iterator_next(struct chunk_iterator_ctx *ctx)
 {
 	// move the file offset to the beginning of the next chunk
-	struct png_chunk_detail current_chunk = ctx->current_chunk;
 	if (ctx->initialized) {
-		off_t next_chunk_offset = ctx->chunk_file_offset;
-		next_chunk_offset += sizeof(u_int32_t);
-		next_chunk_offset += sizeof(char) * CHUNK_TYPE_LENGTH;
-		next_chunk_offset += sizeof(unsigned char) * current_chunk.data_length;
-		next_chunk_offset += sizeof(u_int32_t);
-
-		off_t offset = lseek(ctx->fd, next_chunk_offset, SEEK_SET);
-		if (offset < 0)
+		off_t offset = get_next_chunk_offset(ctx);
+		if (lseek(ctx->fd, offset, SEEK_SET) < 0)
 			return -1;
 	}
 
@@ -112,34 +101,59 @@ int chunk_iterator_next(struct chunk_iterator_ctx *ctx)
 	if (ret != 0)
 		return ret;
 
-	// seek fd file offset to beginning of data portion
-	off_t data_offset = file_offset + sizeof(u_int32_t) + (sizeof(char) * CHUNK_TYPE_LENGTH);
+	off_t data_offset;
+	if (ctx->read_full) {
+		// seek fd to the beginning of the chunk
+		data_offset = file_offset;
+	} else {
+		// seek fd file offset to beginning of data portion
+		data_offset = file_offset + sizeof(u_int32_t) + (sizeof(char) * CHUNK_TYPE_LENGTH);
+	}
+
 	if (lseek(ctx->fd, data_offset, SEEK_SET) < 0)
 		return -1;
 
 	return 0;
 }
 
-ssize_t chunk_iterator_read_data(struct chunk_iterator_ctx *ctx, unsigned char* buffer, size_t length)
+ssize_t chunk_iterator_read_data(struct chunk_iterator_ctx *ctx, unsigned char *buffer, size_t length)
 {
 	if (!ctx->initialized)
 		return -1;
 
+	// read the current file offset from the file descriptor
 	off_t file_offset = lseek(ctx->fd, 0, SEEK_CUR);
 	if (file_offset < 0)
 		return -1;
 	if (file_offset < SIGNATURE_LENGTH)
 		return -1;
 
-	off_t data_segment_start = ctx->chunk_file_offset
-			+ sizeof(u_int32_t) + (sizeof(char) * CHUNK_TYPE_LENGTH);
-	if (file_offset < data_segment_start)
-		return -1;
-	if (file_offset >= (data_segment_start + ctx->current_chunk.data_length))
-		return 0;
+	off_t read_end;
 
-	size_t bytes_left_to_read = data_segment_start + ctx->current_chunk.data_length
-			- file_offset;
+	// make sure that the fd is within the file offsets we expect
+	if (ctx->read_full) {
+		// is offset positioned before the chunk?
+		if (file_offset < ctx->chunk_file_offset)
+			return -1;
+
+		// is offset positioned after the chunk?
+		read_end = get_next_chunk_offset(ctx);
+		if (file_offset >= read_end)
+			return 0;
+	} else {
+		// is offset positioned before the data segment?
+		off_t data_segment_start = ctx->chunk_file_offset
+				+ sizeof(u_int32_t) + (sizeof(char) * CHUNK_TYPE_LENGTH);
+		if (file_offset < data_segment_start)
+			return -1;
+
+		// is chunk positioned after the data segment?
+		read_end = data_segment_start + ctx->current_chunk.data_length;
+		if (file_offset >= read_end)
+			return 0;
+	}
+
+	size_t bytes_left_to_read = read_end - file_offset;
 	bytes_left_to_read = bytes_left_to_read > length ? length : bytes_left_to_read;
 	if (recoverable_read(ctx->fd, buffer, bytes_left_to_read) != bytes_left_to_read)
 		return -1;
@@ -202,6 +216,8 @@ int chunk_iterator_is_ancillary(struct chunk_iterator_ctx *ctx)
 void chunk_iterator_destroy_ctx(struct chunk_iterator_ctx *ctx)
 {
 	ctx->fd = -1;
+	ctx->initialized = 0;
+	ctx->read_full = 0;
 	ctx->current_chunk = (struct png_chunk_detail) {
 			.chunk_type = {0, 0, 0, 0},
 			.data_length = 0,
@@ -255,4 +271,24 @@ static int construct_png_chunk_detail(int fd, struct png_chunk_detail *new_chunk
 	new_chunk->chunk_crc = ntohl(new_chunk->chunk_crc);
 
 	return 0;
+}
+
+/**
+ * Calculate the file offset of the next chunk in the file.
+ *
+ * If the chunk iterator context has not been initialized, returns a negative
+ * offset.
+ * */
+static off_t get_next_chunk_offset(struct chunk_iterator_ctx *ctx)
+{
+	if (!ctx->initialized)
+		return -1;
+
+	off_t next_chunk_offset = ctx->chunk_file_offset;
+	next_chunk_offset += sizeof(u_int32_t);
+	next_chunk_offset += sizeof(char) * CHUNK_TYPE_LENGTH;
+	next_chunk_offset += sizeof(unsigned char) * ctx->current_chunk.data_length;
+	next_chunk_offset += sizeof(u_int32_t);
+
+	return next_chunk_offset;
 }
