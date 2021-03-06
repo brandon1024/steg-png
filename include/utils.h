@@ -111,6 +111,10 @@ ssize_t copy_file_fd(int dest_fd, int src_fd);
  * the offset of the chunk of data; useful for printing the hexdump of a file or
  * larger stream (requiring multiple calls to this function).
  *
+ * Contiguous data can be printed with multiple invocations of this function,
+ * granted the `len` given be a multiple of 16. Otherwise, data won't be printed
+ * in a user-friendly manner.
+ *
  * Example:
  * 00000000  23 20 4a 65 74 42 72 61  69 6e 73 0a 2e 69 64 65  |# JetBrains..ide|
  * 00000010  61 2f 0a 0a 23 20 6d 61  63 4f 53 0a 2e 44 53 5f  |a/..# macOS..DS_|

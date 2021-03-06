@@ -1,7 +1,7 @@
 # steg-png
 [![Build Status](https://travis-ci.com/brandon1024/steg-png.svg?branch=master)](https://travis-ci.com/brandon1024/steg-png)
 
-`steg-png` is a simple C-based commandline application that can be used to embed data in Portable Network Graphics (PNG) images. This concept is known as steganography, and is useful for concealing hidden messages in otherwise unassuming files.
+`steg-png` is a simple toolset for embedding data in Portable Network Graphics (PNG) images. This concept is known as steganography, and is useful for concealing hidden messages in otherwise unassuming files.
 
 ![](screenshot1.png)
 
@@ -69,11 +69,14 @@ usage: steg-png extract [-o | --output <file>] <file>
     --hexdump           print a hexdump of the embedded data
     -h, --help          show help and exit
 
-usage: steg-png inspect [(--filter <chunk type>)...] [--critical] [--ancillary] [--hexdump] <file>
-   or: steg-png inspect (-i | --interactive) <file>
+
+usage: steg-png inspect [(--filter <chunk type>)...] [--critical] [--ancillary] <file>
+   or: steg-png inspect [<options>...] --hexdump [--full-source] <file>
+   or: steg-png inspect [<options>...] --machine-readable [(-z | --nul)] <file>
    or: steg-png inspect (-h | --help)
 
-    --hexdump           print a canonical hex+ASCII hexdump of the embedded data
+    --hexdump           print a canonical hex+ASCII hexdump of chunk data as it appears in the file
+    --full-source       show full hexdump of chunk as it appears in the file (including control bytes)
                         show chunks with specific type
     --critical          show critical chunks
     --ancillary         show ancillary chunks
@@ -81,6 +84,7 @@ usage: steg-png inspect [(--filter <chunk type>)...] [--critical] [--ancillary] 
                         show output in machine-readable format
     -z, --nul           terminate lines with NUL byte instead of line feed
     -h, --help          show help and exit
+
 ```
 
 ## Example Usage
