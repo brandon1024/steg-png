@@ -145,7 +145,8 @@ static int extract(const char *input_file, const char *output_file, int show_hex
 					}
 
 					size_t data_to_write = DEFLATE_STREAM_BUFFER_SIZE - strm.avail_out;
-					if (recoverable_write(tmp_fd, output_buffer, data_to_write) != data_to_write)
+					ssize_t data_written = recoverable_write(tmp_fd, output_buffer, data_to_write);
+					if (data_written < 0 || ((size_t) data_written) != data_to_write)
 						FATAL("failed to write inflated data to temporary file.");
 				} while (strm.avail_out == 0);
 			}

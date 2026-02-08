@@ -1,13 +1,15 @@
 #include <stdio.h>
-#include <string.h>
-#include <fcntl.h>
-#include <unistd.h>
+#include <stdlib.h>
 #include <errno.h>
-#include <sys/stat.h>
-#include <arpa/inet.h>
-#include <sys/time.h>
+#include <unistd.h>
 #include <limits.h>
+#include <fcntl.h>
 #include <libgen.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <sys/time.h>
+#include <sys/types.h>
+#include <arpa/inet.h>
 
 #include "md5.h"
 #include "strbuf.h"
@@ -221,7 +223,8 @@ static int embed(const char *input_file, const char *output_file,
  * */
 static inline u_int32_t write_and_update_crc(int fd, const void *data, size_t length, u_int32_t crc)
 {
-	if (recoverable_write(fd, data, length) != length)
+	ssize_t written = recoverable_write(fd, data, length);
+	if (written < 0 || ((size_t) written) != length)
 		FATAL("failed to write new chunk to output file descriptor %d", fd);
 
 	return crc32_z(crc, data, length);

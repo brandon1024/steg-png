@@ -1,14 +1,25 @@
 # steg-png
+
 [![Build Status](https://travis-ci.com/brandon1024/steg-png.svg?branch=master)](https://travis-ci.com/brandon1024/steg-png)
 
-`steg-png` is a simple C-based commandline application that can be used to embed data in Portable Network Graphics (PNG) images. This concept is known as steganography, and is useful for concealing hidden messages in otherwise unassuming files.
+`steg-png` is a simple C-based commandline application that can be used to embed
+data in Portable Network Graphics (PNG) images. This concept is known as
+steganography, and is useful for concealing hidden messages in otherwise
+unassuming files.
 
 ![](screenshot1.png)
 
 ## How it works
-Portable Network Graphics (PNG) images have a pretty simple format. They are composed of an 8-byte file header and a number of data chunks.
 
-Data chunks within the file are split into two groups, known as `critical` and `ancillary`. Critical chunks are necessary for the decoder to be able to decode and display the image. This includes information like color data and dimensions. Ancillary chunks are optional chunks of data that decoders will ignore if unknown to them. There are a number of standard ancillary chunks, but steg-png uses a custom `stEG` type chunk.
+Portable Network Graphics (PNG) images have a pretty simple format. They are
+composed of an 8-byte file header and a number of data chunks.
+
+Data chunks within the file are split into two groups, known as `critical` and
+`ancillary`. Critical chunks are necessary for the decoder to be able to decode
+and display the image. This includes information like color data and dimensions.
+Ancillary chunks are optional chunks of data that decoders will ignore if
+unknown to them. There are a number of standard ancillary chunks, but steg-png
+uses a custom `stEG` type chunk.
 
 Chunks have the following byte structure:
 
@@ -16,32 +27,41 @@ Chunks have the following byte structure:
 |---------|------------|--------------|---------|
 | 4 bytes | 4 bytes    | Length bytes | 4 bytes |
 
-steg-png uses the popular [zlib compression library](https://github.com/madler/zlib) to compress the data before embedding in the file. This has the added benefit of obfuscating the message, which will help to mitigate the risk of discovering the message when byte inspecting the file.
+steg-png uses the popular [zlib compression
+library](https://github.com/madler/zlib) to compress the data before embedding
+in the file. This has the added benefit of obfuscating the message, which will
+help to mitigate the risk of discovering the message when byte inspecting the
+file.
 
-You can read more on the specifics of the PNG format in [informational RFC 2083](https://tools.ietf.org/html/rfc2083).
+You can read more on the specifics of the PNG format in [informational RFC
+2083](https://tools.ietf.org/html/rfc2083).
 
 ## Building and Installing
-By default, steg-png is installed into your user's ~/bin directory. To install, from the project root run:
-```bash
-$ mkdir build
-$ cd build
-$ cmake ..
-$ make install
 
+By default, steg-png is installed into your user's `~/bin` directory. To
+install, from the project root run:
+
+```bash
+$ sudo apt install zlib1g-dev
+$ cmake -S . -B build
+$ make -C build
+$ ./build/steg-png --help
+
+$ make -C install
 $ ~/bin/steg-png --help
 ```
 
 For a global install, run from the project root:
+
 ```bash
-$ mkdir build
-$ cd build
-$ cmake -DCMAKE_INSTALL_PREFIX=/usr/local ..
-$ make install
+# cmake -DCMAKE_INSTALL_PREFIX=/usr/local -S . -B build
+# make -C build install
 
 $ steg-png --help
 ```
 
 ## Usage
+
 Using the tool is simple.
 
 ```
@@ -84,7 +104,9 @@ usage: steg-png inspect [(--filter <chunk type>)...] [--critical] [--ancillary] 
 ```
 
 ## Example Usage
+
 ### Embed Plaintext Messages
+
 ```bash
 $ ls
 test.png
@@ -101,6 +123,7 @@ secret.png
 ```
 
 ### Embed Arbitrary Data
+
 ```bash
 $ ls
 execute-me.sh
@@ -118,6 +141,7 @@ secret.png
 ```
 
 ### Extracting Plaintext Messages
+
 ```bash
 $ ls
 test.png
@@ -128,6 +152,7 @@ hello!
 ```
 
 ### Extracting Arbitrary Data
+
 ```bash
 $ ls
 secret.png
@@ -138,6 +163,7 @@ hello!
 ```
 
 ### Visualizing Embedded Data
+
 ```bash
 $ ls
 secret.png
@@ -146,6 +172,7 @@ $ steg-png extract --hexdump secret.png
 ```
 
 ### Inspecting Embedded Data
+
 ```bash
 $ ls
 secret.png
@@ -166,6 +193,7 @@ data:
 ```
 
 ### Inspecting PNG File Structure
+
 ```bash
 $ ls
 secret.png
@@ -211,6 +239,7 @@ cyclic redundancy check: 2923585666 (network byte order 0x826042ae)
 ```
 
 ### Parsing PNG File Structure
+
 ```bash
 $ ls
 secret.png
@@ -285,9 +314,13 @@ IEND 936109 0 2923585666
 ```
 
 ## Using steg-png with GNU Privacy Guard (GPG)
-When no message is provided, steg-png will accept input from stdin. This is useful when using steg-png with GPG.
 
-For instance, you could encrypt a message symmetrically before embedding in the file:
+When no message is provided, steg-png will accept input from stdin. This is
+useful when using steg-png with GPG.
+
+For instance, you could encrypt a message symmetrically before embedding in the
+file:
+
 ```
 echo "my secret message" > message_in
 gpg -o - --armor --symmetric message_in | steg-png embed example.png
@@ -296,4 +329,6 @@ gpg -o - --armor --symmetric message_in | steg-png embed example.png
 ![](screenshot2.png)
 
 ## License
-This project is free software and is available under the [MIT License](https://opensource.org/licenses/MIT).
+
+This project is free software and is available under the [MIT
+License](https://opensource.org/licenses/MIT).
