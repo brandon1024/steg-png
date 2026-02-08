@@ -120,7 +120,7 @@ int chunk_iterator_next(struct chunk_iterator_ctx *ctx)
 	return 0;
 }
 
-ssize_t chunk_iterator_read_data(struct chunk_iterator_ctx *ctx, unsigned char* buffer, size_t length)
+ssize_t chunk_iterator_read_data(struct chunk_iterator_ctx *ctx, unsigned char *buffer, size_t length)
 {
 	if (!ctx->initialized)
 		return -1;
@@ -138,13 +138,17 @@ ssize_t chunk_iterator_read_data(struct chunk_iterator_ctx *ctx, unsigned char* 
 	if (file_offset >= (data_segment_start + ctx->current_chunk.data_length))
 		return 0;
 
-	size_t bytes_left_to_read = data_segment_start + ctx->current_chunk.data_length
-			- file_offset;
-	bytes_left_to_read = bytes_left_to_read > length ? length : bytes_left_to_read;
-	if (recoverable_read(ctx->fd, buffer, bytes_left_to_read) != bytes_left_to_read)
+	size_t bytes_left_to_read = data_segment_start - file_offset + ctx->current_chunk.data_length;
+	if (bytes_left_to_read > length)
+		bytes_left_to_read = length;
+
+	ssize_t bytes_in = recoverable_read(ctx->fd, buffer, bytes_left_to_read);
+	if (bytes_in < 0)
+		return -1;
+	if (((size_t) bytes_in) != bytes_left_to_read)
 		return -1;
 
-	return bytes_left_to_read;
+	return bytes_in;
 }
 
 int chunk_iterator_get_chunk_data_length(struct chunk_iterator_ctx *ctx, u_int32_t *len)

@@ -83,7 +83,7 @@ void strbuf_attach_fmt(struct strbuf *buff, const char *fmt, ...)
 
 		va_end(varargs);
 
-		if (len < size) {
+		if (((size_t) len) < size) {
 			tmp.len = len;
 			break;
 		}
